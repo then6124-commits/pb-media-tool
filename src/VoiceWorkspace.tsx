@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, dirName, errText, fileUrl, openFolder, useJobs } from './bridge'
 import './voice.css'
 
-type EngineId = 'gemini' | 'eleven' | 'capcut' | 'omni'
+type EngineId = 'gemini' | 'eleven' | 'edge' | 'capcut' | 'omni'
 type SegStatus = 'cho' | 'dang_chay' | 'xong' | 'loi'
 
 type Segment = {
@@ -27,6 +27,34 @@ const LS_GEM_VOICE = 'pb.voice.gem.voice'
 const LS_GEM_LANG = 'pb.voice.gem.lang'
 const LS_GEM_LIMIT = 'pb.voice.gem.limit'
 const LS_EL_VOICE = 'pb.voice.el.voice'
+const LS_EDGE_VOICE = 'pb.voice.edge.voice'
+const LS_EDGE_RATE = 'pb.voice.edge.rate'
+const LS_EDGE_PITCH = 'pb.voice.edge.pitch'
+const LS_EDGE_LOCALE = 'pb.voice.edge.locale'
+
+type EdgeVoice = { id: string; name: string; locale: string; gender: string; desc: string }
+
+/** Giọng Edge dự phòng khi chưa tải được danh sách đầy đủ (~400 giọng) từ Microsoft. */
+const EDGE_FALLBACK: EdgeVoice[] = [
+  { id: 'vi-VN-HoaiMyNeural', name: 'HoaiMy', locale: 'vi-VN', gender: 'Nữ', desc: 'Tiếng Việt' },
+  { id: 'vi-VN-NamMinhNeural', name: 'NamMinh', locale: 'vi-VN', gender: 'Nam', desc: 'Tiếng Việt' },
+  { id: 'en-US-AvaMultilingualNeural', name: 'Ava (đa ngữ)', locale: 'en-US', gender: 'Nữ', desc: 'Expressive, Caring' },
+  { id: 'en-US-AndrewMultilingualNeural', name: 'Andrew (đa ngữ)', locale: 'en-US', gender: 'Nam', desc: 'Warm, Confident' },
+  { id: 'en-US-EmmaMultilingualNeural', name: 'Emma (đa ngữ)', locale: 'en-US', gender: 'Nữ', desc: 'Cheerful, Clear' },
+  { id: 'en-US-BrianMultilingualNeural', name: 'Brian (đa ngữ)', locale: 'en-US', gender: 'Nam', desc: 'Approachable, Casual' },
+  { id: 'en-US-JennyNeural', name: 'Jenny', locale: 'en-US', gender: 'Nữ', desc: 'Friendly, Considerate' },
+  { id: 'en-US-GuyNeural', name: 'Guy', locale: 'en-US', gender: 'Nam', desc: 'Passion' },
+  { id: 'en-US-AriaNeural', name: 'Aria', locale: 'en-US', gender: 'Nữ', desc: 'Positive, Confident' },
+  { id: 'en-GB-SoniaNeural', name: 'Sonia', locale: 'en-GB', gender: 'Nữ', desc: 'Friendly' },
+  { id: 'en-GB-RyanNeural', name: 'Ryan', locale: 'en-GB', gender: 'Nam', desc: 'Friendly' },
+  { id: 'ja-JP-NanamiNeural', name: 'Nanami', locale: 'ja-JP', gender: 'Nữ', desc: '' },
+  { id: 'ko-KR-SunHiNeural', name: 'SunHi', locale: 'ko-KR', gender: 'Nữ', desc: '' },
+  { id: 'zh-CN-XiaoxiaoNeural', name: 'Xiaoxiao', locale: 'zh-CN', gender: 'Nữ', desc: 'Warm' },
+  { id: 'zh-CN-YunxiNeural', name: 'Yunxi', locale: 'zh-CN', gender: 'Nam', desc: 'Lively, Sunshine' },
+  { id: 'fr-FR-DeniseNeural', name: 'Denise', locale: 'fr-FR', gender: 'Nữ', desc: '' },
+  { id: 'de-DE-KatjaNeural', name: 'Katja', locale: 'de-DE', gender: 'Nữ', desc: '' },
+  { id: 'es-ES-ElviraNeural', name: 'Elvira', locale: 'es-ES', gender: 'Nữ', desc: '' },
+]
 const LS_EL_MODEL = 'pb.voice.el.model'
 const LS_EL_LANG = 'pb.voice.el.lang'
 const LS_TEXT = 'pb.voice.text'
@@ -36,6 +64,7 @@ const MIN_CHARS = 20
 const ENGINES: { id: EngineId; label: string; icon: string }[] = [
   { id: 'gemini', label: 'Gemini', icon: '✨' },
   { id: 'eleven', label: 'ElevenLabs', icon: '〰️' },
+  { id: 'edge', label: 'Edge (Microsoft)', icon: '🗣' },
   { id: 'capcut', label: 'CapCut', icon: '✂' },
   { id: 'omni', label: 'OmniVoice (Colab)', icon: '🔗' },
 ]
@@ -1081,6 +1110,172 @@ function ElevenPanel({
   )
 }
 
+function EdgePanel({
+  text,
+  setText,
+  segs,
+  setSegs,
+  onRun,
+  running,
+}: {
+  text: string
+  setText: (t: string) => void
+  segs: Segment[]
+  setSegs: (s: Segment[]) => void
+  onRun: () => void
+  running: boolean
+}) {
+  const [voices, setVoices] = useState<EdgeVoice[]>(EDGE_FALLBACK)
+  const [loadErr, setLoadErr] = useState('')
+  const [voiceId, setVoiceId] = useState(() => loadStr(LS_EDGE_VOICE, 'vi-VN-HoaiMyNeural'))
+  const [locale, setLocale] = useState(() => loadStr(LS_EDGE_LOCALE, 'vi-VN'))
+  const [rate, setRate] = useState(() => Number(loadStr(LS_EDGE_RATE, '0')) || 0)
+  const [pitch, setPitch] = useState(() => Number(loadStr(LS_EDGE_PITCH, '0')) || 0)
+  const [q, setQ] = useState('')
+  const pv = usePreview()
+  const chars = text.length
+
+  useEffect(() => {
+    api<{ voices: EdgeVoice[] }>('/api/voice/edge-voices', {})
+      .then((r) => r.voices.length && setVoices(r.voices))
+      .catch((e) => setLoadErr(errText(e)))
+  }, [])
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_EDGE_VOICE, voiceId)
+      localStorage.setItem(LS_EDGE_LOCALE, locale)
+      localStorage.setItem(LS_EDGE_RATE, String(rate))
+      localStorage.setItem(LS_EDGE_PITCH, String(pitch))
+    } catch {
+      /* ignore */
+    }
+  }, [voiceId, locale, rate, pitch])
+
+  const locales = useMemo(() => Array.from(new Set(voices.map((v) => v.locale))).sort(), [voices])
+  const shown = useMemo(() => {
+    const qq = q.trim().toLowerCase()
+    return voices.filter(
+      (v) =>
+        (!locale || v.locale === locale) &&
+        (!qq || `${v.id} ${v.name} ${v.gender} ${v.desc}`.toLowerCase().includes(qq)),
+    )
+  }, [voices, locale, q])
+
+  return (
+    <div className="vo-body">
+      <aside className="vo-side el">
+        <div className="vo-warn-banner">
+          Giọng Microsoft Edge — miễn phí, không cần key. Lần đầu dùng app tự cài thư viện edge-tts (cần mạng).
+        </div>
+        <div className="vo-voice-pick">
+          <div className="vo-section-head">
+            <span>CHỌN GIỌNG NÓI (EDGE)</span>
+            <select className="vo-edge-locale" value={locale} onChange={(e) => setLocale(e.target.value)}>
+              <option value="">Mọi ngôn ngữ</option>
+              {locales.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </div>
+          <input className="vo-search" placeholder="Tìm giọng (tên, Nam/Nữ)…" value={q} onChange={(e) => setQ(e.target.value)} />
+          {loadErr && (
+            <div className="vo-join-err">
+              Chưa tải được danh sách đầy đủ ({loadErr.slice(0, 80)}) — đang dùng {EDGE_FALLBACK.length} giọng có sẵn.
+            </div>
+          )}
+          {pv.err && <div className="vo-join-err">Nghe thử lỗi: {pv.err}</div>}
+          <div className="vo-voice-list">
+            {shown.map((v) => (
+              <button
+                key={v.id}
+                type="button"
+                className={`vo-voice-card ${v.id === voiceId ? 'on' : ''}`}
+                onClick={() => setVoiceId(v.id)}
+              >
+                <div className="vo-voice-main">
+                  <div className="vo-voice-name">
+                    {v.name} <span className="vo-dd-sub">· {v.gender} · {v.locale}</span>
+                  </div>
+                  <div className="vo-voice-desc">{v.desc || v.id}</div>
+                </div>
+                <div className="vo-voice-acts" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    className="vo-mini"
+                    title="Nghe thử"
+                    disabled={!!pv.busy}
+                    onClick={() => void pv.play('edge', v.id, v.locale)}
+                  >
+                    {pv.busy === `edge:${v.id}` ? '⏳' : '▶'}
+                  </button>
+                </div>
+              </button>
+            ))}
+          </div>
+          <div className="vo-voice-meta">
+            <span>
+              {shown.length} / {voices.length}
+            </span>
+          </div>
+        </div>
+        <div className="vo-cfg">
+          <div className="vo-field">
+            <label>
+              Tốc độ <b>{rate > 0 ? `+${rate}` : rate}%</b>
+            </label>
+            <input type="range" min={-50} max={100} step={5} value={rate} onChange={(e) => setRate(Number(e.target.value))} />
+          </div>
+          <div className="vo-field">
+            <label>
+              Cao độ <b>{pitch > 0 ? `+${pitch}` : pitch}Hz</b>
+            </label>
+            <input type="range" min={-50} max={50} step={5} value={pitch} onChange={(e) => setPitch(Number(e.target.value))} />
+          </div>
+        </div>
+        <div className="vo-input-card">
+          <textarea
+            className="vo-textarea"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Dán nội dung (tối thiểu 20 ký tự)..."
+          />
+          <div className={`vo-char ${chars >= MIN_CHARS ? 'ok' : ''}`}>
+            {chars >= MIN_CHARS ? `${chars} ký tự` : `Cần tối thiểu ${MIN_CHARS} ký tự (Hiện tại: ${chars})`}
+          </div>
+          <button
+            type="button"
+            className="vo-btn block"
+            disabled={chars < MIN_CHARS}
+            onClick={() =>
+              setSegs([
+                ...segs,
+                ...splitSegments(text, 2000).map((p, i) => ({
+                  id: Date.now() + i,
+                  text: p,
+                  duration: '—',
+                  status: 'cho' as SegStatus,
+                  selected: false,
+                })),
+              ])
+            }
+          >
+            Thêm vào hàng đợi · Edge
+          </button>
+        </div>
+      </aside>
+      <SegmentsPanel
+        segs={segs}
+        setSegs={setSegs}
+        onRun={onRun}
+        running={running}
+        emptyHint="Edge — nhập text rồi thêm vào hàng đợi."
+      />
+    </div>
+  )
+}
+
 function SimpleEnginePanel({
   title,
   note,
@@ -1217,7 +1412,14 @@ export default function VoiceWorkspace({
     const body =
       engine === 'gemini'
         ? { engine, voice: loadStr(LS_GEM_VOICE, 'Kore') }
-        : {
+        : engine === 'edge'
+          ? {
+              engine,
+              voice: loadStr(LS_EDGE_VOICE, 'vi-VN-HoaiMyNeural'),
+              rate: loadStr(LS_EDGE_RATE, '0'),
+              pitch: loadStr(LS_EDGE_PITCH, '0'),
+            }
+          : {
             engine,
             voice: loadStr(LS_EL_VOICE, ''),
             model: loadStr(LS_EL_MODEL, 'v3'),
@@ -1240,6 +1442,8 @@ export default function VoiceWorkspace({
       ? 'TTS Gemini'
       : engine === 'eleven'
         ? 'TTS ElevenLabs'
+        : engine === 'edge'
+          ? 'TTS Edge (Microsoft)'
         : engine === 'capcut'
           ? 'TTS CapCut'
           : 'TTS OmniVoice'
@@ -1249,7 +1453,7 @@ export default function VoiceWorkspace({
       <header className="vo-top">
         <div className="vo-top-left">
           <h1>{title}</h1>
-          <span className="vo-crumb">Voice · Gemini TTS · ElevenLabs</span>
+          <span className="vo-crumb">Voice · Gemini TTS · ElevenLabs · Edge</span>
         </div>
         <EngineTabs engine={engine} onChange={setEngine} />
       </header>
@@ -1275,6 +1479,9 @@ export default function VoiceWorkspace({
           running={running}
           onOpenSettings={onOpenSettings}
         />
+      )}
+      {engine === 'edge' && (
+        <EdgePanel text={text} setText={setText} segs={segs} setSegs={setSegs} onRun={runTts} running={running} />
       )}
       {engine === 'capcut' && (
         <SimpleEnginePanel

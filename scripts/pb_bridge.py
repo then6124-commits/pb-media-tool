@@ -1955,6 +1955,69 @@ def eleven_ds_giong() -> list[dict]:
     return ra
 
 
+def _edge_tts():
+    """Thư viện edge-tts (giọng Microsoft Edge, miễn phí). Chưa có thì tự pip install một lần."""
+    try:
+        import edge_tts  # type: ignore
+        return edge_tts
+    except ImportError:
+        log("⬇ Cài edge-tts (một lần)…", "INFO", "voice")
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "edge-tts"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=_KHONG_CUA_SO)
+        if r.returncode != 0:
+            raise RuntimeError("Không cài được edge-tts: " + (r.stderr or "pip lỗi").strip()[-200:])
+        import importlib
+        importlib.invalidate_caches()
+        import edge_tts  # type: ignore
+        return edge_tts
+
+
+def _phan_tram(x, don_vi: str) -> str:
+    """-20 → «-20%», 5 → «+5Hz» (định dạng edge-tts cần)."""
+    try:
+        n = int(float(str(x or "0").rstrip("%Hz")))
+    except ValueError:
+        n = 0
+    return "%+d%s" % (n, don_vi)
+
+
+def tts_edge(text: str, voice: str, out_path: str, rate="", pitch="", volume="") -> str:
+    import asyncio
+    et = _edge_tts()
+    giong = voice or "vi-VN-HoaiMyNeural"
+    loi = ""
+    for _lan in range(3):
+        try:
+            asyncio.run(et.Communicate(text, giong, rate=_phan_tram(rate, "%"),
+                                       pitch=_phan_tram(pitch, "Hz"), volume=_phan_tram(volume, "%")).save(out_path))
+            if os.path.isfile(out_path) and os.path.getsize(out_path) > 100:
+                return out_path
+            loi = "Edge TTS không trả âm thanh"
+        except Exception as e:
+            loi = "Edge TTS: %s" % e
+        time.sleep(2)
+    raise RuntimeError(loi)
+
+
+_EDGE_DS: list = []
+
+
+def edge_ds_giong() -> list[dict]:
+    """Toàn bộ giọng Edge (~400, mọi ngôn ngữ) — tải một lần rồi giữ trong bộ nhớ."""
+    if not _EDGE_DS:
+        import asyncio
+        et = _edge_tts()
+        for v in asyncio.run(et.list_voices()):
+            ten = str(v.get("ShortName") or "")
+            nhan = ten.split("-")[-1].replace("Neural", "").replace("Multilingual", " (đa ngữ)")
+            _EDGE_DS.append({"id": ten, "name": nhan, "locale": str(v.get("Locale") or ""),
+                             "gender": "Nữ" if v.get("Gender") == "Female" else "Nam",
+                             "desc": ", ".join((v.get("VoiceTag") or {}).get("VoicePersonalities") or [])[:60]})
+        _EDGE_DS.sort(key=lambda x: (x["locale"], x["name"]))
+    return _EDGE_DS
+
+
 CAU_NGHE_THU = {
     "vi": "Xin chào, đây là giọng đọc thử. Bạn thấy giọng này thế nào?",
     "en": "Hello, this is a quick voice preview. How does this voice sound to you?",
@@ -1984,6 +2047,9 @@ def tts_tao(engine: str, text: str, out_base: str, voice: str, d: dict | None = 
         raise RuntimeError("Đoạn văn trống")
     if engine == "gemini":
         return tts_gemini(text, voice, out_base + ".wav", str(d.get("style") or ""))
+    if engine == "edge":
+        return tts_edge(text, voice, out_base + ".mp3", d.get("rate") or "", d.get("pitch") or "",
+                        d.get("volume") or "")
     if engine == "eleven":
         return tts_eleven(text, voice, out_base + ".mp3", str(d.get("model") or ""),
                           str(d.get("lang") or ""))
@@ -3975,6 +4041,8 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "path": nghe_thu_giong(
                     str(d.get("engine") or ""), str(d.get("voice") or ""),
                     str(d.get("lang") or ""), str(d.get("model") or ""))})
+            if u.path == "/api/voice/edge-voices":
+                return self._json(200, {"ok": True, "voices": edge_ds_giong()})
             if u.path == "/api/voice/eleven-voices":
                 return self._json(200, {"ok": True, "voices": eleven_ds_giong()})
             if u.path == "/api/config/bridge":
