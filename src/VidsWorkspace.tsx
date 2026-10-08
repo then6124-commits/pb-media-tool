@@ -751,16 +751,16 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                   «_keo_dai.mp4».
                 </span>
               </div>
-              <div className="st-extend-actions">
-                <button type="button" className="st-btn ok" onClick={() => void addPcVideos()}>
-                  <Ico n="upload" size={13} /> Thêm video từ máy
-                </button>
-                {extendList.length > 0 && (
+              {extendList.length > 0 && (
+                <div className="st-extend-actions">
+                  <button type="button" className="st-btn ok" onClick={() => void addPcVideos()}>
+                    <Ico n="upload" size={13} /> Thêm video từ máy
+                  </button>
                   <button type="button" className="st-btn" onClick={() => setExtendList([])}>
                     <Ico n="trash" size={13} /> Xoá danh sách
                   </button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
             {extendList.length === 0 ? (
               <div className="st-extend-empty">
