@@ -99,7 +99,7 @@ function runPyJson(scriptName: string, args: string[], timeoutMs = 60000): Recor
 }
 
 /** Đăng nhập Grok (x.ai) bằng email + mật khẩu trong Chrome hồ sơ riêng → cookie grok.com. */
-function runGrokLoginSidecar(email: string, password: string): Promise<Record<string, unknown>> {
+function runGrokLoginSidecar(email: string, password: string, key = ''): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     const script = path.join(scriptsDir(), 'grok_login_sidecar.js')
     if (!fs.existsSync(script)) {
@@ -116,9 +116,10 @@ function runGrokLoginSidecar(email: string, password: string): Promise<Record<st
       return
     }
     const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
-    const slug = (email || 'grok').toLowerCase().replace(/[^a-z0-9._-]+/g, '_').slice(0, 60)
+    // Mỗi tài khoản một hồ sơ Chrome: theo khoá đã lưu, không thì theo email, không thì khoá mới
+    const slug = (key || email || `grok_${Date.now()}`).toLowerCase().replace(/[^a-z0-9._-]+/g, '_').slice(0, 60)
     const profileDir = path.join(local, 'PBMedia', 'chrome_grok', slug)
-    const timeoutMs = 300000
+    const timeoutMs = email && password ? 300000 : 600000 // tự đăng nhập tay: chờ 10 phút
     const cfgPath = path.join(os.tmpdir(), `pb_grok_${Date.now()}.json`)
     fs.writeFileSync(cfgPath, JSON.stringify({ email, password, profileDir, moduleDirs, chromePath: findChromeExe(), timeoutMs }), 'utf8')
     const child = spawn('node', [script, cfgPath], { cwd: scriptsDir(), windowsHide: false, env: process.env })
@@ -149,7 +150,7 @@ function runGrokLoginSidecar(email: string, password: string): Promise<Record<st
           const ev = JSON.parse(line) as Record<string, unknown>
           if (ev.event === 'done' && ev.ok && ev.cookies) {
             clearTimeout(timer)
-            finish({ ok: true, cookies: ev.cookies, cookieCount: ev.cookieCount || 0, profileDir })
+            finish({ ok: true, cookies: ev.cookies, cookieCount: ev.cookieCount || 0, profileDir, key: slug })
           } else if (ev.event === 'error') {
             clearTimeout(timer)
             finish({ ok: false, detail: String(ev.message || 'loi sidecar') })
@@ -458,7 +459,7 @@ function chromeLaunchPlugin(): Plugin {
             return
           }
           const body = await readBody(req)
-          jsonRes(res, 200, await runGrokLoginSidecar(String(body.email || '').trim(), String(body.password || '')))
+          jsonRes(res, 200, await runGrokLoginSidecar(String(body.email || '').trim(), String(body.password || ''), String(body.key || '')))
           return
         }
 

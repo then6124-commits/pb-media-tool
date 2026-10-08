@@ -6121,3 +6121,4 @@ textarea.flow-frame-box { width: 100%; resize: vertical; color: inherit; font: i
 .inv-setup-err { color: #dc2626; font-size: 12px; line-height: 1.4; }
 .grok-or { text-align: center; font-size: 12px; opacity: 0.6; margin: 10px 0 2px; }
 .grok-or::before, .grok-or::after { content: ''; display: inline-block; width: 30%; height: 1px; background: currentColor; opacity: 0.3; vertical-align: middle; margin: 0 8px; }
+.grok-login-big { padding: 12px !important; font-size: 14px !important; }

@@ -2945,7 +2945,9 @@ def grok_profile_viec(d: dict) -> list[dict]:
                 ck = ck[7:].strip()
             ten_ck = {x.split("=", 1)[0].strip() for x in ck.split(";") if "=" in x}
             email = str(d.get("email") or "").strip()
-            cu = next((p for p in ds if p.get("type") == "web" and email and p.get("email") == email), None)
+            khoa = str(d.get("chrome_key") or "").strip()
+            cu = next((p for p in ds if p.get("type") == "web" and (
+                (khoa and p.get("chrome_key") == khoa) or (email and p.get("email") == email))), None)
             if cu:
                 # Đăng nhập lại tài khoản đã có → chỉ thay cookie (và mật khẩu nếu gửi mới)
                 cu["key"] = ck
@@ -2954,7 +2956,7 @@ def grok_profile_viec(d: dict) -> list[dict]:
                 continue
             moi.append({"id": int(time.time() * 1000) + len(moi), "type": "web",
                         "name": ten.strip() or email or "grok.com %d" % (len(ds) + len(moi) + 1),
-                        "email": email,
+                        "email": email, "chrome_key": khoa,
                         "key": ck, "status": "valid" if ten_ck & {"sso", "sso-rw"} else "untested",
                         "created": time.strftime("%H:%M:%S %d/%m/%Y")})
         moi_that = [x for x in moi if x]

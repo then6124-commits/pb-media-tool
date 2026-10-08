@@ -143,7 +143,13 @@ async function main() {
   // Hồ sơ đã đăng nhập từ lần trước → vào thẳng grok.com
   try { await page.goto('https://grok.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (e) { /* */ }
   await sleep(2500);
-  if (!coSso(await layCookie())) {
+  if (!coSso(await layCookie()) && !email && !password) {
+    // Tự đăng nhập: mở trang chọn cách đăng nhập (Email / Google / X) rồi chỉ chờ
+    log('Mở trang đăng nhập Grok — tự đăng nhập trong cửa sổ này');
+    try {
+      await page.goto('https://accounts.x.ai/sign-in?redirect=grok-com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    } catch (e) { /* */ }
+  } else if (!coSso(await layCookie())) {
     log('Mở trang đăng nhập x.ai');
     try {
       // email=true → vào thẳng form «Log in with your email», khỏi màn chọn Google/X/Email
