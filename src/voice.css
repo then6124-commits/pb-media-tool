@@ -684,3 +684,9 @@
 }
 .vo-join-bar audio { height: 32px; max-width: 320px; }
 .vo-join-err { color: #fca5a5; overflow-wrap: anywhere; }
+.vo-dd-sub { opacity: 0.6; font-size: 0.86em; font-weight: 500; }
+.vo-play-mini { cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.vo-play-mini:hover { background: rgba(127,127,127,0.18); }
+.vo-mini:disabled { opacity: 0.5; cursor: wait; }
+.vo-field:first-child .vo-dd-menu { min-width: 320px; }
+.vo-voice-pick .vo-join-err, .vo-cfg .vo-join-err { font-size: 12px; line-height: 1.45; margin: 6px 0; }

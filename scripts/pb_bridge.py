@@ -1955,6 +1955,27 @@ def eleven_ds_giong() -> list[dict]:
     return ra
 
 
+CAU_NGHE_THU = {
+    "vi": "Xin chào, đây là giọng đọc thử. Bạn thấy giọng này thế nào?",
+    "en": "Hello, this is a quick voice preview. How does this voice sound to you?",
+}
+
+
+def nghe_thu_giong(engine: str, voice: str, lang: str = "", model: str = "") -> str:
+    """Tạo (một lần) câu đọc thử cho giọng → đường dẫn file. Lưu đệm theo engine/giọng/ngôn ngữ."""
+    if not voice:
+        raise RuntimeError("Chưa chọn giọng")
+    ngon = "vi" if (lang or "").lower().startswith(("vi", "vietnam")) else "en"
+    thu_muc = os.path.join(REF_DIR, "upload", "_nghe_thu")
+    os.makedirs(thu_muc, exist_ok=True)
+    ten = re.sub(r"[^\w\-]+", "_", "%s_%s_%s_%s" % (engine, voice, ngon, model or ""))
+    for duoi in (".wav", ".mp3"):
+        if os.path.isfile(os.path.join(thu_muc, ten + duoi)):
+            return os.path.join(thu_muc, ten + duoi)
+    return tts_tao(engine, CAU_NGHE_THU[ngon], os.path.join(thu_muc, ten), voice,
+                   {"model": model, "lang": "vi" if ngon == "vi" else ""})
+
+
 def tts_tao(engine: str, text: str, out_base: str, voice: str, d: dict | None = None) -> str:
     """Một đoạn văn → một file âm thanh (đuôi do engine quyết định). Trả đường dẫn."""
     d = d or {}
@@ -3921,6 +3942,10 @@ class XuLy(BaseHTTPRequestHandler):
             if u.path == "/api/voice/join":
                 return self._json(200, {"ok": True, **voice_noi(d.get("paths"), int(d.get("gap_ms") or 0),
                                                                 str(d.get("out_dir") or ""))})
+            if u.path == "/api/voice/preview":
+                return self._json(200, {"ok": True, "path": nghe_thu_giong(
+                    str(d.get("engine") or ""), str(d.get("voice") or ""),
+                    str(d.get("lang") or ""), str(d.get("model") or ""))})
             if u.path == "/api/voice/eleven-voices":
                 return self._json(200, {"ok": True, "voices": eleven_ds_giong()})
             if u.path == "/api/config/bridge":

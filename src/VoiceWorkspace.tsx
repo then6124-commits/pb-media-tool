@@ -40,39 +40,65 @@ const ENGINES: { id: EngineId; label: string; icon: string }[] = [
   { id: 'omni', label: 'OmniVoice (Colab)', icon: '🔗' },
 ]
 
-const GEM_VOICES = [
-  'Zubenelgenubi',
-  'Zephyr',
-  'Puck',
-  'Charon',
-  'Kore',
-  'Fenrir',
-  'Leda',
-  'Orus',
-  'Aoede',
-  'Callirrhoe',
-  'Autonoe',
-  'Enceladus',
-  'Iapetus',
-  'Umbriel',
-  'Algieba',
-  'Despina',
-  'Erinome',
-  'Algenib',
-  'Rasalgethi',
-  'Laomedeia',
-  'Achernar',
-  'Alnilam',
-  'Schedar',
-  'Gacrux',
-  'Pulcherrima',
-  'Achird',
-  'Zubenelgenubi',
-  'Vindemiatrix',
-  'Sadachbia',
-  'Sadaltager',
-  'Sulafat',
+/** 30 giọng dựng sẵn của Gemini TTS (tên · giới tính · chất giọng theo tài liệu Google). */
+const GEM_VOICE_INFO: { name: string; gender: 'Nam' | 'Nữ'; style: string }[] = [
+  { name: 'Zephyr', gender: 'Nữ', style: 'Tươi sáng' },
+  { name: 'Puck', gender: 'Nam', style: 'Sôi nổi' },
+  { name: 'Charon', gender: 'Nam', style: 'Truyền đạt, rõ ràng' },
+  { name: 'Kore', gender: 'Nữ', style: 'Chắc, dứt khoát' },
+  { name: 'Fenrir', gender: 'Nam', style: 'Hào hứng' },
+  { name: 'Leda', gender: 'Nữ', style: 'Trẻ trung' },
+  { name: 'Orus', gender: 'Nam', style: 'Chắc, dứt khoát' },
+  { name: 'Aoede', gender: 'Nữ', style: 'Nhẹ nhàng, thoáng' },
+  { name: 'Callirrhoe', gender: 'Nữ', style: 'Thoải mái' },
+  { name: 'Autonoe', gender: 'Nữ', style: 'Tươi sáng' },
+  { name: 'Enceladus', gender: 'Nam', style: 'Hơi thở, trầm' },
+  { name: 'Iapetus', gender: 'Nam', style: 'Trong, rõ' },
+  { name: 'Umbriel', gender: 'Nam', style: 'Thoải mái' },
+  { name: 'Algieba', gender: 'Nam', style: 'Mượt' },
+  { name: 'Despina', gender: 'Nữ', style: 'Mượt' },
+  { name: 'Erinome', gender: 'Nữ', style: 'Trong, rõ' },
+  { name: 'Algenib', gender: 'Nam', style: 'Khàn, sỏi' },
+  { name: 'Rasalgethi', gender: 'Nam', style: 'Truyền đạt, rõ ràng' },
+  { name: 'Laomedeia', gender: 'Nữ', style: 'Sôi nổi' },
+  { name: 'Achernar', gender: 'Nữ', style: 'Mềm' },
+  { name: 'Alnilam', gender: 'Nam', style: 'Chắc, dứt khoát' },
+  { name: 'Schedar', gender: 'Nam', style: 'Đều, ổn định' },
+  { name: 'Gacrux', gender: 'Nữ', style: 'Trưởng thành' },
+  { name: 'Pulcherrima', gender: 'Nữ', style: 'Thẳng thắn' },
+  { name: 'Achird', gender: 'Nam', style: 'Thân thiện' },
+  { name: 'Zubenelgenubi', gender: 'Nam', style: 'Đời thường' },
+  { name: 'Vindemiatrix', gender: 'Nữ', style: 'Dịu dàng' },
+  { name: 'Sadachbia', gender: 'Nam', style: 'Sinh động' },
+  { name: 'Sadaltager', gender: 'Nam', style: 'Uyên bác' },
+  { name: 'Sulafat', gender: 'Nữ', style: 'Ấm' },
 ]
+const GEM_VOICES = GEM_VOICE_INFO.map((v) => v.name)
+const gemInfo = (name: string) => GEM_VOICE_INFO.find((v) => v.name === name)
+
+/** Nghe thử giọng: bridge tạo một câu mẫu (lưu đệm, lần sau phát lại ngay). */
+function usePreview() {
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState('')
+  const audio = useRef<HTMLAudioElement | null>(null)
+  async function play(engine: string, voice: string, lang = '', model = '') {
+    const key = `${engine}:${voice}`
+    if (busy) return
+    setBusy(key)
+    setErr('')
+    try {
+      const r = await api<{ path: string }>('/api/voice/preview', { engine, voice, lang, model })
+      audio.current?.pause()
+      audio.current = new Audio(fileUrl(r.path))
+      await audio.current.play()
+    } catch (e) {
+      setErr(errText(e))
+    } finally {
+      setBusy('')
+    }
+  }
+  return { busy, err, play }
+}
 
 const GEM_LANGS: { code: string; flag: string; label: string; locale: string }[] = [
   { code: 'VN', flag: '🇻🇳', label: 'Tiếng Việt', locale: 'vi-VN' },
@@ -87,13 +113,28 @@ const GEM_LANGS: { code: string; flag: string; label: string; locale: string }[]
   { code: 'CN', flag: '🇨🇳', label: 'Tiếng Trung', locale: 'cmn-CN' },
 ]
 
+/** Giọng dựng sẵn của ElevenLabs — mọi tài khoản/key đều dùng được qua API. */
 const EL_VOICES: ElevenVoice[] = [
-  { id: 'tung', name: 'Tung Dang', desc: 'Deep, Warm and Resonant', fav: true },
-  { id: 'ninh', name: 'Ninh Don', desc: 'Clear, Professional Narrator' },
-  { id: 'nhu', name: 'Nhu', desc: 'Soft, Friendly Female' },
-  { id: 'trieu', name: 'Trieu Duong', desc: 'Bright, Energetic Male' },
-  { id: 'mai', name: 'Mai', desc: 'Warm Storytelling Female' },
-  { id: 'trung', name: 'Trung Caha', desc: 'Calm Documentary Tone' },
+  { id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George', desc: 'Nam · Anh · ấm, kể chuyện', fav: true },
+  { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah', desc: 'Nữ · Mỹ · nhẹ nhàng, chuyên nghiệp' },
+  { id: '9BWtsMINqrJLrRacOk9x', name: 'Aria', desc: 'Nữ · Mỹ · biểu cảm' },
+  { id: 'CwhRBWXzGAHq8TQ4Fs17', name: 'Roger', desc: 'Nam · Mỹ · tự tin' },
+  { id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura', desc: 'Nữ · Mỹ · tươi tắn' },
+  { id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie', desc: 'Nam · Úc · tự nhiên' },
+  { id: 'N2lVS1w4EtoT3dr4eOWO', name: 'Callum', desc: 'Nam · Mỹ · khàn' },
+  { id: 'SAz9YHcvj6GT2YYXdXww', name: 'River', desc: 'Trung tính · Mỹ · điềm tĩnh' },
+  { id: 'TX3LPaxmHKxFdv7VOQHJ', name: 'Liam', desc: 'Nam · Mỹ · trẻ, rõ' },
+  { id: 'XB0fDUnXU5powFXDhCwa', name: 'Charlotte', desc: 'Nữ · Thuỵ Điển · quyến rũ' },
+  { id: 'Xb7hH8MSUJpSbSDYk0k2', name: 'Alice', desc: 'Nữ · Anh · tự tin, tin tức' },
+  { id: 'XrExE9yKIg1WjnnlVkGX', name: 'Matilda', desc: 'Nữ · Mỹ · thân thiện' },
+  { id: 'bIHbv24MWmeRgasZH58o', name: 'Will', desc: 'Nam · Mỹ · thân thiện' },
+  { id: 'cgSgspJ2msm6clMCkdW9', name: 'Jessica', desc: 'Nữ · Mỹ · biểu cảm' },
+  { id: 'cjVigY5qzO86Huf0OWal', name: 'Eric', desc: 'Nam · Mỹ · thân thiện' },
+  { id: 'iP95p4xoKVk53GoZ742B', name: 'Chris', desc: 'Nam · Mỹ · đời thường' },
+  { id: 'nPczCjzI2devNBz1zQrb', name: 'Brian', desc: 'Nam · Mỹ · trầm, thuyết minh' },
+  { id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel', desc: 'Nam · Anh · tin tức' },
+  { id: 'pFZP5JQG7iQjIQuC4Bku', name: 'Lily', desc: 'Nữ · Anh · ấm' },
+  { id: 'pqHfZKP75CvOlQylNhV4', name: 'Bill', desc: 'Nam · Mỹ · lớn tuổi, tin cậy' },
 ]
 
 const EL_MODELS = [
@@ -478,6 +519,7 @@ function GeminiPanel({
   const [voiceOpen, setVoiceOpen] = useState(false)
   const [langOpen, setLangOpen] = useState(false)
   const [voiceQ, setVoiceQ] = useState('')
+  const pv = usePreview()
   const [langQ, setLangQ] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -497,9 +539,8 @@ function GeminiPanel({
 
   const filteredVoices = useMemo(() => {
     const q = voiceQ.trim().toLowerCase()
-    const uniq = Array.from(new Set(GEM_VOICES))
-    if (!q) return uniq
-    return uniq.filter((v) => v.toLowerCase().includes(q))
+    if (!q) return GEM_VOICES
+    return GEM_VOICE_INFO.filter((v) => `${v.name} ${v.gender} ${v.style}`.toLowerCase().includes(q)).map((v) => v.name)
   }, [voiceQ])
 
   const filteredLangs = useMemo(() => {
@@ -595,7 +636,10 @@ function GeminiPanel({
                     setLangOpen(false)
                   }}
                 >
-                  <span>🔊 {voice}</span>
+                  <span>
+                    🔊 {voice}
+                    {gemInfo(voice) && <span className="vo-dd-sub"> · {gemInfo(voice)?.gender} · {gemInfo(voice)?.style}</span>}
+                  </span>
                   <span>▾</span>
                 </button>
                 {voiceOpen && (
@@ -619,8 +663,23 @@ function GeminiPanel({
                             setVoiceQ('')
                           }}
                         >
-                          <span>{v}</span>
-                          <span className="vo-play-mini">▶</span>
+                          <span>
+                            {v}
+                            <span className="vo-dd-sub">
+                              {' '}
+                              · {gemInfo(v)?.gender} · {gemInfo(v)?.style}
+                            </span>
+                          </span>
+                          <span
+                            className="vo-play-mini"
+                            title="Nghe thử"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void pv.play('gemini', v, lang.locale)
+                            }}
+                          >
+                            {pv.busy === `gemini:${v}` ? '⏳' : '▶'}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -694,6 +753,7 @@ function GeminiPanel({
             />
           </div>
           <div className="vo-voice-id">{lang.locale}-Chirp3-HD-{voice}</div>
+          {pv.err && <div className="vo-join-err">Nghe thử lỗi: {pv.err}</div>}
           {need > 0 && chars > 0 && (
             <div className="vo-hint-soft">Cần thêm {need} ký tự để chạy TTS</div>
           )}
@@ -728,7 +788,10 @@ function ElevenPanel({
   running: boolean
   onOpenSettings?: () => void
 }) {
-  const [voiceId, setVoiceId] = useState(() => loadStr(LS_EL_VOICE, 'tung'))
+  const [voiceId, setVoiceId] = useState(() => {
+    const v = loadStr(LS_EL_VOICE, EL_VOICES[0].id)
+    return /^[a-z]{2,8}$/.test(v) ? EL_VOICES[0].id : v // id giả của bản cũ ('tung'…) → giọng thật
+  })
   const [model, setModel] = useState(() => loadStr(LS_EL_MODEL, 'v3'))
   const [lang, setLang] = useState(() => loadStr(LS_EL_LANG, 'Vietnamese'))
   const [q, setQ] = useState('')
@@ -737,12 +800,17 @@ function ElevenPanel({
   const [favs, setFavs] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(EL_VOICES.map((v) => [v.id, !!v.fav])),
   )
-  const [allVoices, setAllVoices] = useState<ElevenVoice[]>([])
+  const [accVoices, setAccVoices] = useState<ElevenVoice[]>([])
+  const allVoices = useMemo(() => {
+    const seen = new Set(accVoices.map((v) => v.id))
+    return [...accVoices, ...EL_VOICES.filter((v) => !seen.has(v.id))]
+  }, [accVoices])
+  const pv = usePreview()
   const [voiceErr, setVoiceErr] = useState('')
 
   useEffect(() => {
     api<{ voices: ElevenVoice[] }>('/api/voice/eleven-voices', {})
-      .then((r) => setAllVoices(r.voices))
+      .then((r) => setAccVoices(r.voices))
       .catch((e) => setVoiceErr(errText(e)))
   }, [])
   const fileRef = useRef<HTMLInputElement>(null)
@@ -816,7 +884,12 @@ function ElevenPanel({
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
-          {voiceErr && <div className="vo-join-err">Không tải được giọng: {voiceErr}</div>}
+          {voiceErr && (
+            <div className="vo-join-err">
+              Chưa tải được giọng trong tài khoản ({voiceErr}) — vẫn dùng được {EL_VOICES.length} giọng có sẵn bên dưới.
+            </div>
+          )}
+          {pv.err && <div className="vo-join-err">Nghe thử lỗi: {pv.err}</div>}
           <div className="vo-voice-list">
             {filtered.map((v) => (
               <button
@@ -830,6 +903,15 @@ function ElevenPanel({
                   <div className="vo-voice-desc">{v.desc}</div>
                 </div>
                 <div className="vo-voice-acts" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    className="vo-mini"
+                    title="Nghe thử"
+                    disabled={!!pv.busy}
+                    onClick={() => void pv.play('eleven', v.id, lang, model)}
+                  >
+                    {pv.busy === `eleven:${v.id}` ? '⏳' : '▶'}
+                  </button>
                   <button
                     type="button"
                     className={`vo-mini ${favs[v.id] ? 'fav' : ''}`}
