@@ -98,6 +98,74 @@ function runPyJson(scriptName: string, args: string[], timeoutMs = 60000): Recor
   }
 }
 
+/** Đăng nhập Grok (x.ai) bằng email + mật khẩu trong Chrome hồ sơ riêng → cookie grok.com. */
+function runGrokLoginSidecar(email: string, password: string): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    const script = path.join(scriptsDir(), 'grok_login_sidecar.js')
+    if (!fs.existsSync(script)) {
+      resolve({ ok: false, detail: 'Thieu scripts/grok_login_sidecar.js' })
+      return
+    }
+    const moduleDirs = [
+      path.join(__viteDir, 'node_modules'),
+      'Y:\\SUPER VEO\\resources\\scripts\\node_modules',
+      'K:\\capcut 102026\\node_modules',
+    ].filter((d) => fs.existsSync(d))
+    if (!moduleDirs.length) {
+      resolve({ ok: false, detail: 'Khong thay puppeteer-real-browser — chay «npm install puppeteer-real-browser» trong thu muc app' })
+      return
+    }
+    const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+    const slug = (email || 'grok').toLowerCase().replace(/[^a-z0-9._-]+/g, '_').slice(0, 60)
+    const profileDir = path.join(local, 'PBMedia', 'chrome_grok', slug)
+    const timeoutMs = 300000
+    const cfgPath = path.join(os.tmpdir(), `pb_grok_${Date.now()}.json`)
+    fs.writeFileSync(cfgPath, JSON.stringify({ email, password, profileDir, moduleDirs, chromePath: findChromeExe(), timeoutMs }), 'utf8')
+    const child = spawn('node', [script, cfgPath], { cwd: scriptsDir(), windowsHide: false, env: process.env })
+    let buf = ''
+    let settled = false
+    const finish = (obj: Record<string, unknown>) => {
+      if (settled) return
+      settled = true
+      try {
+        fs.unlinkSync(cfgPath) // có mật khẩu — xoá ngay
+      } catch {
+        /* ignore */
+      }
+      try {
+        child.kill()
+      } catch {
+        /* ignore */
+      }
+      resolve(obj)
+    }
+    const timer = setTimeout(() => finish({ ok: false, detail: 'Het gio cho dang nhap Grok' }), timeoutMs + 20000)
+    child.stdout?.on('data', (chunk: Buffer) => {
+      buf += chunk.toString('utf8')
+      const parts = buf.split(/\r?\n/)
+      buf = parts.pop() || ''
+      for (const line of parts) {
+        try {
+          const ev = JSON.parse(line) as Record<string, unknown>
+          if (ev.event === 'done' && ev.ok && ev.cookies) {
+            clearTimeout(timer)
+            finish({ ok: true, cookies: ev.cookies, cookieCount: ev.cookieCount || 0, profileDir })
+          } else if (ev.event === 'error') {
+            clearTimeout(timer)
+            finish({ ok: false, detail: String(ev.message || 'loi sidecar') })
+          }
+        } catch {
+          /* dòng không phải JSON */
+        }
+      }
+    })
+    child.on('close', () => {
+      clearTimeout(timer)
+      finish({ ok: false, detail: 'Chrome dong truoc khi dang nhap xong' })
+    })
+  })
+}
+
 /** CapCut/SuperVeo cookie_capture_sidecar.js via puppeteer-real-browser. */
 function runCookieSidecar(opts: {
   profileDir: string
@@ -380,6 +448,17 @@ function chromeLaunchPlugin(): Plugin {
           } catch (e) {
             jsonRes(res, 200, { ok: false, detail: `Save anh loi: ${String(e).slice(0, 140)}` })
           }
+          return
+        }
+
+        // --- ĐĂNG NHẬP GROK (email + mật khẩu) → cookie grok.com ---
+        if (url.startsWith('/local/grok/login')) {
+          if (req.method !== 'POST') {
+            jsonRes(res, 405, { ok: false, detail: 'POST only' })
+            return
+          }
+          const body = await readBody(req)
+          jsonRes(res, 200, await runGrokLoginSidecar(String(body.email || '').trim(), String(body.password || '')))
           return
         }
 

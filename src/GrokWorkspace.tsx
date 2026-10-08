@@ -39,11 +39,12 @@ type ProfileRow = {
   slug: string
   status: 'valid' | 'invalid' | 'testing' | 'untested'
   addon: string
+  email: string
   createdAt: string
   selected: boolean
 }
 
-type BridgeProfile = { id: number; name: string; slug: string; status: ProfileRow['status']; created: string; type?: string }
+type BridgeProfile = { id: number; name: string; slug: string; status: ProfileRow['status']; created: string; type?: string; email?: string }
 
 function toRows(ds: BridgeProfile[], prev: ProfileRow[]): ProfileRow[] {
   return ds.map((p) => ({
@@ -52,6 +53,7 @@ function toRows(ds: BridgeProfile[], prev: ProfileRow[]): ProfileRow[] {
     slug: p.slug,
     status: p.status,
     addon: p.type === 'web' ? 'grok.com' : 'xAI API',
+    email: p.email || '',
     createdAt: p.created,
     selected: prev.find((x) => x.id === p.id)?.selected || false,
   }))
@@ -117,6 +119,9 @@ export default function GrokWorkspace() {
   const [addTab, setAddTab] = useState<'web' | 'manual' | 'batch'>('web')
   const [webName, setWebName] = useState('')
   const [webCookie, setWebCookie] = useState('')
+  const [webEmail, setWebEmail] = useState('')
+  const [webPass, setWebPass] = useState('')
+  const [loginBusy, setLoginBusy] = useState('')
   const [batchText, setBatchText] = useState('')
   const [consoleOpen, setConsoleOpen] = useState(false)
   const [logs, setLogs] = useState<string[]>(['Grok Studio sẵn sàng — xAI API'])
@@ -465,6 +470,38 @@ export default function GrokWorkspace() {
       setManualName('')
       setAddOpen(false)
       flash('Đã thêm profile — bấm Test để kiểm tra key')
+    }
+  }
+
+  /** Mở Chrome hồ sơ riêng của tài khoản, tự điền email + mật khẩu x.ai, chờ có cookie grok.com. */
+  async function loginGrok(email: string, password: string) {
+    if (!email.trim()) {
+      flash('Nhập email tài khoản Grok')
+      return
+    }
+    setLoginBusy(email)
+    flash('Đang mở Chrome đăng nhập Grok — captcha / mã xác minh thì bấm tay trong cửa sổ đó')
+    try {
+      const res = await fetch('/local/grok/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      })
+      const j = (await res.json()) as { ok: boolean; cookies?: string; detail?: string }
+      if (!j.ok || !j.cookies) {
+        flash(`Chưa đăng nhập được: ${j.detail || 'không lấy được cookie'}`)
+        return
+      }
+      if (await profileAction({ action: 'add_web', email: email.trim(), cookies: `${email.trim()}|${j.cookies}` })) {
+        setWebPass('')
+        setWebEmail('')
+        setAddOpen(false)
+        flash(`Đã đăng nhập ${email.trim()}`)
+      }
+    } catch (e) {
+      flash(`Đăng nhập lỗi: ${errText(e)}`)
+    } finally {
+      setLoginBusy('')
     }
   }
 
@@ -999,9 +1036,21 @@ export default function GrokWorkspace() {
                       <button type="button" className="grok-btn-dark" onClick={() => setProfileId(p.id)}>
                         {profileId === p.id ? '✓ Đang dùng' : 'Dùng'}
                       </button>
-                      <button type="button" className="grok-outline-blue" onClick={() => testProfile(p.id)}>
-                        Test
-                      </button>
+                      {p.addon === 'grok.com' && p.email ? (
+                        <button
+                          type="button"
+                          className="grok-outline-blue"
+                          disabled={!!loginBusy}
+                          title="Mở Chrome của tài khoản này để lấy lại cookie (phiên cũ còn thì không cần mật khẩu)"
+                          onClick={() => void loginGrok(p.email, '')}
+                        >
+                          {loginBusy === p.email ? '⏳' : 'Đăng nhập lại'}
+                        </button>
+                      ) : (
+                        <button type="button" className="grok-outline-blue" onClick={() => testProfile(p.id)}>
+                          Test
+                        </button>
+                      )}
                       <button type="button" className="grok-outline-red" onClick={() => deleteProfile(p.id)}>
                         Xóa
                       </button>
@@ -1065,6 +1114,33 @@ export default function GrokWorkspace() {
             </div>
             {addTab === 'web' ? (
               <div className="grok-batch-box">
+                <p className="grok-hint">
+                  Nhập email + mật khẩu tài khoản Grok (x.ai). App mở Chrome riêng cho tài khoản này, tự điền và lấy
+                  cookie khi vào được grok.com. Captcha / mã xác minh / đăng nhập bằng Google thì bấm tay trong cửa sổ
+                  Chrome. Mật khẩu không được lưu.
+                </p>
+                <input
+                  className="grok-key-input"
+                  placeholder="Email tài khoản Grok"
+                  value={webEmail}
+                  onChange={(e) => setWebEmail(e.target.value)}
+                />
+                <input
+                  className="grok-key-input"
+                  type="password"
+                  placeholder="Mật khẩu"
+                  value={webPass}
+                  onChange={(e) => setWebPass(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="grok-btn-dark wide"
+                  disabled={!!loginBusy}
+                  onClick={() => void loginGrok(webEmail, webPass)}
+                >
+                  {loginBusy ? 'Đang chờ đăng nhập trong Chrome…' : 'Đăng nhập & thêm tài khoản'}
+                </button>
+                <div className="grok-or">hoặc dán cookie</div>
                 <p className="grok-hint">
                   Cách lấy cookie: đăng nhập <b>grok.com</b> trên Chrome → F12 → tab <b>Network</b> → tải lại trang → bấm
                   một request tới grok.com → mục <b>Request Headers</b> → chép nguyên dòng <b>cookie</b> dán vào đây.

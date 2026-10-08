@@ -2944,13 +2944,23 @@ def grok_profile_viec(d: dict) -> list[dict]:
             if ck.lower().startswith("cookie:"):
                 ck = ck[7:].strip()
             ten_ck = {x.split("=", 1)[0].strip() for x in ck.split(";") if "=" in x}
+            email = str(d.get("email") or "").strip()
+            cu = next((p for p in ds if p.get("type") == "web" and email and p.get("email") == email), None)
+            if cu:
+                # Đăng nhập lại tài khoản đã có → chỉ thay cookie (và mật khẩu nếu gửi mới)
+                cu["key"] = ck
+                cu["status"] = "valid" if ten_ck & {"sso", "sso-rw"} else "untested"
+                moi.append(None)
+                continue
             moi.append({"id": int(time.time() * 1000) + len(moi), "type": "web",
-                        "name": ten.strip() or "grok.com %d" % (len(ds) + len(moi) + 1),
+                        "name": ten.strip() or email or "grok.com %d" % (len(ds) + len(moi) + 1),
+                        "email": email,
                         "key": ck, "status": "valid" if ten_ck & {"sso", "sso-rw"} else "untested",
                         "created": time.strftime("%H:%M:%S %d/%m/%Y")})
+        moi_that = [x for x in moi if x]
         if not moi:
             raise RuntimeError("Chưa dán cookie grok.com")
-        ds += moi
+        ds += moi_that
     elif viec == "delete":
         bo = set(d.get("ids") or [])
         ds = [p for p in ds if p.get("id") not in bo]
