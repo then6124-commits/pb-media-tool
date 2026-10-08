@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { api, dirName, downloadText, errText, openFolder } from './bridge'
 import './creator.css'
 
 type ModalTab = 'script' | 'ads'
@@ -14,7 +15,14 @@ type Workflow = {
   model: string
   ratio: string
   scenes: string
+  input?: Record<string, unknown>
+  result?: CreatorResult
+  path?: string
+  err?: string
 }
+
+type CreatorScene = { vo: string; img: string; vid: string }
+type CreatorResult = { title?: string; voiceover?: string; scenes: CreatorScene[] }
 
 const LS_WORKFLOWS = 'pb.creator.workflows'
 const LS_LOG_COUNT = 'pb.creator.logCount'
@@ -22,7 +30,6 @@ const LS_LOG_COUNT = 'pb.creator.logCount'
 const AI_MODELS = [
   { id: 'gemini-3-flash', label: '🚀 Gemini 3.0 Flash' },
   { id: 'gemini-2.5-pro', label: '✨ Gemini 2.5 Pro' },
-  { id: 'gpt-4o', label: '🧠 GPT-4o' },
 ]
 
 const IDEA_SOURCES = [
@@ -153,9 +160,9 @@ export default function CreatorWorkspace() {
   const [toast, setToast] = useState<string | null>(null)
   const [logCount, setLogCount] = useState(() => loadJson(LS_LOG_COUNT, 0))
   const [logOpen, setLogOpen] = useState(false)
-  const [logs, setLogs] = useState<string[]>([
-    `[${nowStamp()}] Creator sẵn sàng (mock).`,
-  ])
+  const [logs, setLogs] = useState<string[]>([`[${nowStamp()}] Creator sẵn sàng.`])
+  const [openId, setOpenId] = useState<number | null>(null)
+  const opened = workflows.find((w) => w.id === openId) || null
 
   // Video Script form
   const [wfName, setWfName] = useState('')
@@ -180,7 +187,7 @@ export default function CreatorWorkspace() {
   const [adsScenes, setAdsScenes] = useState('Auto')
   const [adsImgStyle, setAdsImgStyle] = useState(IMAGE_STYLES[0])
   const [adsLang, setAdsLang] = useState(LANGS[0])
-  const [productFile, setProductFile] = useState<{ name: string; url: string } | null>(null)
+  const [productFile, setProductFile] = useState<{ name: string; url: string; path?: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const nextId = useRef(Math.max(0, ...workflows.map((w) => w.id)) + 1)
 
@@ -272,49 +279,80 @@ export default function CreatorWorkspace() {
     return hit ? `${hit.icon} ${hit.label}` : id
   }
 
+  async function runWorkflow(id: number, input: Record<string, unknown>) {
+    setWorkflows((prev) => prev.map((w) => (w.id === id ? { ...w, status: 'running', err: undefined } : w)))
+    try {
+      const r = await api<{ result: CreatorResult; path: string }>('/api/creator/run', input)
+      setWorkflows((prev) =>
+        prev.map((w) => (w.id === id ? { ...w, status: 'done', result: r.result, path: r.path, scenes: String(r.result.scenes.length) } : w)),
+      )
+      pushLog(`Xong: ${input.name} — ${r.result.scenes.length} cảnh`)
+    } catch (e) {
+      const m = errText(e)
+      setWorkflows((prev) => prev.map((w) => (w.id === id ? { ...w, status: 'draft', err: m } : w)))
+      pushLog(`Lỗi ${input.name}: ${m}`)
+      setToast(m)
+    }
+  }
+
   function createWorkflow() {
     if (modalTab === 'script') {
       const name = wfName.trim() || `Video Script ${nextId.current}`
-      if (promptType === 'Auto' && !idea.trim()) {
-        setToast('Nhập ý tưởng / Idea trước khi tạo')
+      if (!idea.trim()) {
+        setToast(promptType === 'Auto' ? 'Nhập ý tưởng / Idea trước khi tạo' : 'Nhập prompt (mỗi dòng một cảnh)')
         return
       }
+      const input = { kind: 'script', name, promptType, model, ideaSource, idea, ratio, scenes, imgStyle, lang }
       const row: Workflow = {
         id: nextId.current++,
         name,
         kind: 'script',
-        status: 'ready',
+        status: 'running',
         createdAt: nowStamp(),
         model: modelLabel(model),
         ratio,
         scenes,
+        input,
       }
       setWorkflows((prev) => [row, ...prev])
       pushLog(`Tạo workflow Video Script: ${name}`)
-      setToast(`Đã tạo & mở: ${name}`)
       closeModal()
+      void runWorkflow(row.id, input)
       return
     }
 
     const name = adsName.trim() || `Product Ads ${nextId.current}`
-    if (!productFile) {
-      setToast('Thêm ảnh sản phẩm trước khi tạo')
+    if (!productFile?.path) {
+      setToast(productFile ? 'Ảnh đang tải lên — chờ chút' : 'Thêm ảnh sản phẩm trước khi tạo')
       return
+    }
+    const input = {
+      kind: 'ads',
+      name,
+      model: adsModel,
+      videoStyle,
+      idea: productPrompt,
+      image: productFile.path,
+      ratio: adsRatio,
+      scenes: adsScenes,
+      imgStyle: adsImgStyle,
+      lang: adsLang,
     }
     const row: Workflow = {
       id: nextId.current++,
       name,
       kind: 'ads',
-      status: 'ready',
+      status: 'running',
       createdAt: nowStamp(),
       model: modelLabel(adsModel),
       ratio: adsRatio,
       scenes: adsScenes,
+      input,
     }
     setWorkflows((prev) => [row, ...prev])
     pushLog(`Tạo workflow Product Ads: ${name} (${productFile.name})`)
-    setToast(`Đã tạo & mở: ${name}`)
     closeModal()
+    void runWorkflow(row.id, input)
   }
 
   function onPickFile(file: File | null) {
@@ -324,7 +362,16 @@ export default function CreatorWorkspace() {
       return
     }
     if (productFile?.url) URL.revokeObjectURL(productFile.url)
-    setProductFile({ name: file.name, url: URL.createObjectURL(file) })
+    const url = URL.createObjectURL(file)
+    setProductFile({ name: file.name, url })
+    // Cầu nối đọc ảnh từ đĩa → tải lên một bản để có đường dẫn
+    fetch(`/api/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
+      .then((r) => r.json())
+      .then((j: { ok?: boolean; path?: string; error?: string }) => {
+        if (!j.ok || !j.path) throw new Error(j.error || 'Tải ảnh lỗi')
+        setProductFile((cur) => (cur && cur.url === url ? { ...cur, path: j.path } : cur))
+      })
+      .catch((e) => setToast(errText(e)))
   }
 
   function toggleSelect(id: number) {
@@ -432,12 +479,19 @@ export default function CreatorWorkspace() {
                     onChange={() => toggleSelect(w.id)}
                   />
                 </label>
-                <div className="cr-name-cell">
+                <div
+                  className="cr-name-cell"
+                  role="button"
+                  tabIndex={0}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setOpenId(w.id)}
+                >
                   <span className="cr-kind">{w.kind === 'script' ? '🎬' : '📦'}</span>
                   <div>
                     <div className="cr-name">{w.name}</div>
                     <div className="cr-meta">
                       {w.model} · {w.ratio} · {w.scenes} cảnh
+                      {w.err && <span className="cr-err"> · ❌ {w.err}</span>}
                     </div>
                   </div>
                 </div>
@@ -448,6 +502,81 @@ export default function CreatorWorkspace() {
           </ul>
         )}
       </div>
+
+      {opened && (
+        <aside className="cr-detail">
+          <div className="cr-log-head">
+            <strong>
+              {opened.kind === 'script' ? '🎬' : '📦'} {opened.result?.title || opened.name}
+            </strong>
+            <button type="button" onClick={() => setOpenId(null)}>
+              ✕
+            </button>
+          </div>
+          <div className="cr-detail-acts">
+            {opened.input && (
+              <button
+                type="button"
+                className="cr-btn-ghost"
+                disabled={opened.status === 'running'}
+                onClick={() => void runWorkflow(opened.id, opened.input as Record<string, unknown>)}
+              >
+                {opened.status === 'running' ? '⏳ Đang chạy…' : '↻ Chạy lại'}
+              </button>
+            )}
+            {opened.result && (
+              <>
+                <button
+                  type="button"
+                  className="cr-btn-ghost"
+                  onClick={() => navigator.clipboard?.writeText(opened.result!.scenes.map((x) => x.img).join('\n'))}
+                >
+                  Copy prompt ảnh
+                </button>
+                <button
+                  type="button"
+                  className="cr-btn-ghost"
+                  onClick={() => navigator.clipboard?.writeText(opened.result!.scenes.map((x) => x.vid).join('\n'))}
+                >
+                  Copy prompt video
+                </button>
+                <button
+                  type="button"
+                  className="cr-btn-ghost"
+                  onClick={() => downloadText(`${opened.name}.json`, JSON.stringify(opened.result, null, 2))}
+                >
+                  Xuất JSON
+                </button>
+              </>
+            )}
+            {opened.path && (
+              <button type="button" className="cr-btn-ghost" onClick={() => openFolder(dirName(opened.path!))}>
+                📂
+              </button>
+            )}
+          </div>
+          {opened.err && <div className="cr-err">❌ {opened.err}</div>}
+          {opened.status === 'running' && <div className="cr-hint">Gemini đang viết kịch bản…</div>}
+          {opened.result?.voiceover && (
+            <div className="cr-scene">
+              <b>Lời đọc</b>
+              <p>{opened.result.voiceover}</p>
+            </div>
+          )}
+          {opened.result?.scenes.map((sc, i) => (
+            <div key={i} className="cr-scene">
+              <b>Cảnh {i + 1}</b>
+              {sc.vo && <p>🎙 {sc.vo}</p>}
+              <p>
+                <span className="cr-tag">ẢNH</span> {sc.img}
+              </p>
+              <p>
+                <span className="cr-tag">VIDEO</span> {sc.vid}
+              </p>
+            </div>
+          ))}
+        </aside>
+      )}
 
       {logOpen && (
         <aside className="cr-log-panel">

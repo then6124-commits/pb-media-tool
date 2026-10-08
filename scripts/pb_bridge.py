@@ -1420,15 +1420,24 @@ def mini_ve_tay(paths, cfg: dict) -> dict:
     return {"jobs": [ve_tay(p, cfg) for p in ds]}
 
 
-def gemini_text(prompt: str, model: str = "") -> str:
-    """Gọi Gemini generateContent; hết hạn mức / khoá hỏng thì xoay khoá kế."""
+def gemini_text(prompt: str, model: str = "", images: list[str] | None = None) -> str:
+    """Gọi Gemini generateContent; hết hạn mức / khoá hỏng thì xoay khoá kế.
+
+    images: đường dẫn ảnh gửi kèm (đọc ảnh sản phẩm, ảnh tham chiếu…)."""
     import urllib.error
     import urllib.request
     keys = gemini_keys()
     if not keys:
         raise RuntimeError("Chưa có Gemini key — nhập ở Cài đặt › Tài khoản")
     model = model or GEMINI_MODEL
-    body = json.dumps({"contents": [{"role": "user", "parts": [{"text": prompt}]}]}).encode("utf-8")
+    parts = []
+    for anh in images or []:
+        duoi = os.path.splitext(anh)[1].lower().lstrip(".")
+        with open(anh, "rb") as f:
+            parts.append({"inlineData": {"mimeType": "image/" + {"jpg": "jpeg"}.get(duoi, duoi or "png"),
+                                         "data": base64.b64encode(f.read()).decode()}})
+    parts.append({"text": prompt})
+    body = json.dumps({"contents": [{"role": "user", "parts": parts}]}).encode("utf-8")
     loi = ""
     for k in keys:
         url = ("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s"
@@ -1957,6 +1966,93 @@ def ghep_video(paths, d: dict) -> dict:
 
     log("▦ Ghép %d clip%s" % (len(ds), " + nhạc" if nhac else ""), "INFO", "ghep")
     return _chay_nen("ghep", ds[0], out_dir, viec, "ghep")
+
+
+# ───────────────────────── Creator ─────────────────────────
+#
+# Workflow «Video Script» / «Product Ads»: Gemini viết kịch bản + chia cảnh +
+# prompt ảnh/video từng cảnh. Kết quả lưu JSON ở Videos\PB_MEDIA\Creator để
+# danh sách workflow còn nguyên sau khi tắt app.
+
+OUT_CREATOR = os.path.join(OUT_MAC_DINH, "Creator")
+CREATOR_MODEL = {"gemini-3-flash": "", "gemini-2.5-pro": "gemini-2.5-pro"}
+
+
+def _doc_trang(url: str) -> str:
+    """Lấy chữ của một trang web (link tham khảo) — bỏ thẻ, tối đa 12k ký tự."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    raw = urllib.request.urlopen(req, timeout=30).read(2_000_000).decode("utf-8", "replace")
+    raw = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", raw)
+    chu = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw))
+    import html
+    return html.unescape(chu).strip()[:12000]
+
+
+def creator_chay(d: dict) -> dict:
+    kind = str(d.get("kind") or "script")
+    idea = str(d.get("idea") or "").strip()
+    lang = str(d.get("lang") or "")
+    lang = "cùng ngôn ngữ với nội dung đầu vào" if (not lang or lang.startswith("Auto")) else lang
+    so_canh = str(d.get("scenes") or "Auto")
+    so_canh = "tự quyết số cảnh hợp lý (mỗi cảnh ~8 giây)" if so_canh == "Auto" else "đúng %s cảnh" % so_canh
+    style = str(d.get("imgStyle") or "")
+    style = "tự chọn phong cách hình phù hợp nội dung" if (not style or "Auto" in style) else style
+    model = CREATOR_MODEL.get(str(d.get("model") or ""), str(d.get("model") or ""))
+    anh = [p for p in [str(d.get("image") or "")] if p and os.path.isfile(p)]
+
+    if d.get("promptType") == "Manual":
+        # Prompt viết tay: mỗi dòng một cảnh, không gọi AI
+        dong = [x.strip() for x in idea.splitlines() if x.strip()]
+        if not dong:
+            raise RuntimeError("Chưa có prompt nào")
+        kq = {"title": d.get("name") or "Manual", "voiceover": "",
+              "scenes": [{"vo": "", "img": x, "vid": x} for x in dong]}
+    else:
+        if kind == "ads" and not anh:
+            raise RuntimeError("Thiếu ảnh sản phẩm")
+        if kind == "script" and not idea:
+            raise RuntimeError("Chưa nhập ý tưởng")
+        nguon = idea
+        if d.get("ideaSource") == "url":
+            if not re.match(r"https?://", idea):
+                raise RuntimeError("Link tham khảo không hợp lệ")
+            nguon = "Nội dung trang tham khảo (%s):\n%s" % (idea, _doc_trang(idea))
+        elif d.get("ideaSource") == "outline":
+            nguon = "Outline có sẵn — bám sát từng ý:\n" + idea
+        if kind == "ads":
+            vai = ("Bạn là đạo diễn quảng cáo sản phẩm. Ảnh đính kèm là sản phẩm thật — giữ ĐÚNG hình "
+                   "dáng, màu, logo trong mọi prompt. Kiểu video: %s%s." % (
+                       d.get("videoStyle") or "auto",
+                       " (KHÔNG lời thoại, để vo rỗng)" if d.get("videoStyle") in
+                       ("showcase", "cinematic", "demo", "loop") else ""))
+        else:
+            vai = "Bạn là biên kịch + đạo diễn video ngắn cho mạng xã hội."
+        yeu_cau = (
+            "%s Viết kịch bản video tỉ lệ %s, %s. Phong cách hình: %s. Lời thoại (vo) viết bằng %s; "
+            "prompt ảnh/video viết bằng tiếng Anh, chi tiết, giữ nhân vật/bối cảnh nhất quán giữa các "
+            "cảnh, prompt video mô tả chuyển động và góc máy trong ~8 giây.\n"
+            "Trả về DUY NHẤT JSON: {\"title\": \"…\", \"voiceover\": \"toàn bộ lời đọc\", "
+            "\"scenes\": [{\"vo\": \"lời cảnh\", \"img\": \"prompt ảnh\", \"vid\": \"prompt video\"}]}\n\n%s"
+            % (vai, d.get("ratio") or "9:16", so_canh, style, lang, nguon or "(chỉ có ảnh sản phẩm)"))
+        log("🎬 Creator: %s · %s" % (kind, d.get("name") or ""), "INFO", "creator")
+        raw = _bo_rao(gemini_text(yeu_cau, model, anh))
+        m = re.search(r"\{.*\}", raw, re.S)
+        try:
+            kq = json.loads(m.group(0) if m else raw)
+        except ValueError:
+            raise RuntimeError("Gemini không trả JSON hợp lệ — thử lại")
+        kq["scenes"] = [{"vo": str(x.get("vo") or ""), "img": str(x.get("img") or ""),
+                         "vid": str(x.get("vid") or "")} for x in kq.get("scenes") or []]
+    os.makedirs(OUT_CREATOR, exist_ok=True)
+    ten = re.sub(r'[\\/:*?"<>|\s]+', "_", str(d.get("name") or kq.get("title") or "workflow"))[:60]
+    p = os.path.join(OUT_CREATOR, "%s_%s.json" % (time.strftime("%Y%m%d_%H%M%S"), ten))
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"input": d, "result": kq}, f, ensure_ascii=False, indent=1)
+    with open(os.path.splitext(p)[0] + "_prompts.txt", "w", encoding="utf-8") as f:
+        f.write("\n".join(x["img"] for x in kq["scenes"]) + "\n\n" + "\n".join(x["vid"] for x in kq["scenes"]))
+    log("✅ Creator xong: %d cảnh → %s" % (len(kq["scenes"]), p), "INFO", "creator")
+    return {"result": kq, "path": p}
 
 
 # ───────────────────────── InVideo ─────────────────────────
@@ -2648,6 +2744,8 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "cfg": che,
                                         "gemini": len(gemini_keys_an_toan()),
                                         "eleven": len(eleven_keys())})
+            if u.path == "/api/creator/run":
+                return self._json(200, {"ok": True, **creator_chay(d)})
             if u.path == "/api/invideo/create":
                 return self._json(200, {"ok": True, **invideo_tao(d)})
             if u.path == "/api/invideo/list":
