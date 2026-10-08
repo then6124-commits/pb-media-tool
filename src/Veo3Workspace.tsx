@@ -227,7 +227,6 @@ export default function Veo3Workspace() {
   const saved = useMemo(() => readPersisted(), [])
   const [mode, setMode] = useState<VeoMode>((saved.mode as VeoMode) || 'text')
   const [modeOpen, setModeOpen] = useState(false)
-  const [running, setRunning] = useState(false)
   const [ratio, setRatio] = useState((saved.ratio as string) || '9:16')
   const [model, setModel] = useState((saved.model as string) || 'Veo 3.1 Fast')
   const [autoUpscale, setAutoUpscale] = useState(Boolean(saved.autoUpscale))
@@ -418,28 +417,6 @@ export default function Veo3Workspace() {
     } catch { /* ignore */ }
   }, [mode, ratio, model, outDir, autoUpscale, autoCrop, voice, prompt, view, logOpen, ingTab, v2vDuration, style, removeOverlay, omniIntent, t2vModel, t2vDuration])
 
-  useEffect(() => {
-    if (!running) return
-    const timer = window.setInterval(() => {
-      setJobs((prev) => {
-        const next = prev.map((j) => {
-          if (j.status === 'xong' || j.status === 'loi') return j
-          if (j.status === 'cho') return { ...j, status: 'dang_chay' as const, progress: 8 }
-          const progress = Math.min(100, j.progress + 6 + Math.floor(Math.random() * 14))
-          if (progress >= 100) {
-            const fail = Math.random() < 0.08
-            return { ...j, progress: fail ? j.progress : 100, status: fail ? ('loi' as const) : ('xong' as const) }
-          }
-          return { ...j, progress }
-        })
-        if (!next.some((j) => j.status === 'cho' || j.status === 'dang_chay')) {
-          window.setTimeout(() => { setRunning(false); pushLog('Batch mock hoàn tất') }, 0)
-        }
-        return next
-      })
-    }, 450)
-    return () => window.clearInterval(timer)
-  }, [running, pushLog])
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -809,17 +786,7 @@ export default function Veo3Workspace() {
       void startTextReal(real.map((j) => j.prompt))
       return
     }
-    setJobs((prev) => {
-      const n = prev.filter((j) => (filter === 'loi' ? j.status === 'loi' : true)).length
-      if (!n) return prev
-      pushLog(filter === 'loi' ? `Tạo lại ${n} video lỗi (mock)` : `Tạo lại ${n} video (mock)`)
-      return prev.map((j) =>
-        filter === 'loi'
-          ? j.status === 'loi' ? { ...j, status: 'cho' as const, progress: 0 } : j
-          : { ...j, status: 'cho' as const, progress: 0 },
-      )
-    })
-    setRunning(true)
+    showToast(filter === 'loi' ? 'Không có video lỗi để tạo lại' : 'Không có video để tạo lại')
   }
   function deleteJob(id: string) {
     setHiddenJobs((prev) => [...prev, id])
@@ -829,7 +796,7 @@ export default function Veo3Workspace() {
   function clearJobs() {
     api('/api/flow/clear', { kind: 'veo3' }).catch(() => {})
     setHiddenJobs((prev) => [...prev, ...bridgeJobs.filter((j) => j.status !== 'dang_chay').map((j) => j.id)])
-    setJobs([]); setRunning(false); pushLog('Đã xóa tất cả job (file video vẫn giữ)')
+    setJobs([]); pushLog('Đã xóa tất cả job (file video vẫn giữ)')
   }
   function createProjectFromModal() {
     const ideaTotalSec = ideaMinutes * 60 + ideaSeconds
@@ -1113,7 +1080,7 @@ export default function Veo3Workspace() {
             </div>
             <div className="t2v-files-bar">
               <span className="t2v-files-title">Danh sách file</span>
-              {!running && (
+              {!bridgeRunning && (
                 <button type="button" className="t2v-mini" title="Xóa tất cả file" onClick={t2vClearFiles}>
                   ✕ Xóa tất cả
                 </button>
@@ -1156,7 +1123,7 @@ export default function Veo3Workspace() {
           </div>
         )}
 
-        <button type="button" className={`t2v-drop${t2vDrag ? ' drag' : ''}`} disabled={running}
+        <button type="button" className={`t2v-drop${t2vDrag ? ' drag' : ''}`} disabled={bridgeRunning}
           onClick={() => txtInputRef.current?.click()}
           onDragOver={t2vDragOver} onDragLeave={() => setT2vDrag(false)} onDrop={t2vDrop}>
           <span className="t2v-drop-ico" aria-hidden>🗎</span>

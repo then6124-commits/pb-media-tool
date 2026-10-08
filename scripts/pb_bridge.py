@@ -3409,18 +3409,36 @@ def ban_quyen(d: dict) -> dict:
             "days": st.get("days"), "name": st.get("name") or "", "machine_id": license_manager.machine_id()}
 
 
+def file_cua_app() -> set:
+    """Mọi file do cầu nối tạo ra trong phiên này (Vids, Muse, việc nền, Flow)."""
+    cho_phep = {j.get("out_path") for j in HANG.jobs.values()}
+    cho_phep.update(j.get("clip_path") for j in HANG.jobs.values())
+    cho_phep.update(j.get("out_path") for j in MUSE.jobs.values())
+    cho_phep.update(v.get("out_path") for v in VIEC.viec.values())
+    for v in list(VIEC.viec.values()):
+        cho_phep.update(x.get("path") for x in v.get("items") or [])
+    with FLOW.lock:
+        for v in FLOW.items.values():
+            cho_phep.update(v.get("files") or [])
+            if v["status"] == "xong":
+                cho_phep.update(FLOW._file_canh(v["out_dir"], v["scene"], v["kind"]))
+    cho_phep.discard(None)
+    cho_phep.discard("")
+    return cho_phep
+
+
 def chep_file(paths, dest: str) -> dict:
     """«Download» của Veo3: chép video đã tạo sang thư mục người dùng chọn (trùng tên → thêm (2), (3)…)."""
     if not (dest and os.path.isabs(dest)):
         raise RuntimeError("Chưa chọn thư mục đích")
     os.makedirs(dest, exist_ok=True)
     goc = os.path.abspath(OUT_MAC_DINH) + os.sep
+    cua_app = file_cua_app()
     n = 0
     for p in paths or []:
         p = str(p or "")
         # chỉ chép file do app tạo (trong thư mục lưu) — không thành cửa sổ chép file tuỳ ý
-        if not (os.path.isfile(p) and (os.path.abspath(p).startswith(goc) or p in {
-                v.get("out_path") for v in VIEC.viec.values()})):
+        if not (os.path.isfile(p) and (os.path.abspath(p).startswith(goc) or p in cua_app)):
             continue
         ten, duoi = os.path.splitext(os.path.basename(p))
         dich, k = os.path.join(dest, ten + duoi), 2
@@ -3580,16 +3598,7 @@ class XuLy(BaseHTTPRequestHandler):
                 p = (q.get("path") or [""])[0]
                 # Chỉ phát file mà CHÍNH cầu nối vừa tạo ra — không mở cửa đọc
                 # file tuỳ ý trên máy.
-                cho_phep = {j.get("out_path") for j in HANG.jobs.values()}
-                cho_phep.update(j.get("out_path") for j in MUSE.jobs.values())
-                cho_phep.update(v.get("out_path") for v in VIEC.viec.values())
-                for v in list(VIEC.viec.values()):
-                    cho_phep.update(x.get("path") for x in v.get("items") or [])
-                with FLOW.lock:
-                    for v in FLOW.items.values():
-                        cho_phep.update(v.get("files") or [])
-                        if v["status"] == "xong":
-                            cho_phep.update(FLOW._file_canh(v["out_dir"], v["scene"], v["kind"]))
+                cho_phep = file_cua_app()
                 trong_out = any(os.path.abspath(p).startswith(os.path.abspath(g) + os.sep)
                                 for g in (OUT_MAC_DINH, os.path.join(REF_DIR, "upload")))
                 if (p not in cho_phep and not trong_out) or not os.path.isfile(p):

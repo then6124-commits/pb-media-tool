@@ -2878,6 +2878,9 @@ td.clip {
 }
 .grok-primary > div:first-child { font-weight: 700; font-size: 14px; }
 
+.grok-studio.mid-collapsed { grid-template-columns: 300px 56px 1fr; }
+.grok-studio.mid-collapsed .grok-mid > :not(.grok-mid-head) { display: none; }
+.grok-studio.mid-collapsed .grok-mid-head { flex-direction: column; gap: 8px; }
 .grok-mid-head {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 10px;

@@ -52,134 +52,6 @@ const TOP_TABS: { id: TopTab; label: string; badge?: string; badgeCls?: string }
 
 
 
-type MockField = { label: string; value: string; kind?: 'select' | 'text' | 'check' }
-type MockRow = { id: number; name: string; meta: string; status: string; statusCls: string }
-
-function ModuleWorkspace({
-  title,
-  crumb,
-  note,
-  fields,
-  rows,
-  primaryLabel = 'Bắt đầu',
-  secondaryLabel = 'Làm mới',
-}: {
-  title: string
-  crumb: string
-  note: string
-  fields: MockField[]
-  rows: MockRow[]
-  primaryLabel?: string
-  secondaryLabel?: string
-}) {
-  const [running, setRunning] = useState(false)
-
-  return (
-    <div className="muse-wrap module-wrap">
-      <header className="muse-top">
-        <div className="top-left">
-          <h1>{title}</h1>
-          <span className="crumb">{crumb}</span>
-        </div>
-        <div className="top-right">
-          <span className="pill status online">
-            <i className="dot" />
-            Mock sẵn sàng
-          </span>
-        </div>
-      </header>
-
-      <main className="muse-content">
-        <section className="card controls">
-          <div className="module-note">{note}</div>
-          <div className="toolbar module-fields">
-            {fields.map((f) =>
-              f.kind === 'check' ? (
-                <label key={f.label} className="check">
-                  <input type="checkbox" defaultChecked={f.value === '1'} readOnly />
-                  {f.label}
-                </label>
-              ) : (
-                <div key={f.label} className="tool-group">
-                  <label>{f.label}</label>
-                  {f.kind === 'select' ? (
-                    <select className="select" defaultValue={f.value}>
-                      <option>{f.value}</option>
-                    </select>
-                  ) : (
-                    <input className="input" defaultValue={f.value} readOnly />
-                  )}
-                </div>
-              ),
-            )}
-          </div>
-          <textarea
-            className="prompt"
-            placeholder="Khu vực nhập liệu mock — sẽ nối backend sau…"
-            defaultValue=""
-            readOnly
-          />
-        </section>
-
-        <section className="card table-card">
-          <div className="table-head">
-            <h2>Danh sách mock</h2>
-            <div className="table-meta">
-              <span>{rows.length} mục</span>
-            </div>
-          </div>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th style={{ width: 48 }}>#</th>
-                  <th>Tên</th>
-                  <th>Chi tiết</th>
-                  <th style={{ width: 120 }}>Trạng thái</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id}>
-                    <td>{r.id}</td>
-                    <td>{r.name}</td>
-                    <td className="clip">{r.meta}</td>
-                    <td>
-                      <span className={`tag ${r.statusCls}`}>{r.status}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </main>
-
-      <footer className="bottombar">
-        <p className="hint">Placeholder · chưa nối API thật</p>
-        <div className="bottom-actions">
-          <button type="button" className="btn">
-            {secondaryLabel}
-          </button>
-          {!running ? (
-            <button type="button" className="btn primary" onClick={() => setRunning(true)}>
-              {primaryLabel}
-            </button>
-          ) : (
-            <button type="button" className="btn danger" onClick={() => setRunning(false)}>
-              Dừng
-            </button>
-          )}
-        </div>
-      </footer>
-    </div>
-  )
-}
-
-
-
-
-
 function SettingsView({ pane }: { pane: SettingsPane }) {
   switch (pane) {
     case 'user':
@@ -207,7 +79,7 @@ function PlaceholderWorkspace({ title }: { title: string }) {
       <div className="placeholder-card">
         <div className="placeholder-ico">◇</div>
         <h2>{title}</h2>
-        <p>Mock tab — UI học layout SuperVeo, chưa nối backend.</p>
+        <p>Không tìm thấy tab này.</p>
       </div>
     </div>
   )

@@ -482,7 +482,7 @@ export default function FlowWorkspace() {
     showToast('Đã reset status')
   }
 
-  const exportMock = () => {
+  const exportJson = () => {
     const blob = new Blob(
       [JSON.stringify({ name, nodes, edges, savedAt: new Date().toISOString() }, null, 2)],
       { type: 'application/json' },
@@ -498,7 +498,7 @@ export default function FlowWorkspace() {
     setPanel(null)
   }
 
-  const importMock = (file: File) => {
+  const importJson = (file: File) => {
     const reader = new FileReader()
     reader.onload = () => {
       try {
@@ -1072,7 +1072,7 @@ export default function FlowWorkspace() {
               </div>
               <div className="flow-panel-body">
                 <p className="flow-ie-note">JSON workflow: node + dây nối + đường dẫn media</p>
-                <button type="button" className="flow-big-btn" onClick={exportMock}>
+                <button type="button" className="flow-big-btn" onClick={exportJson}>
                   <span className="flow-big-ico">⬇</span>
                   <span>
                     <strong>Export</strong>
@@ -1120,7 +1120,7 @@ export default function FlowWorkspace() {
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0]
-          if (f) importMock(f)
+          if (f) importJson(f)
           e.target.value = ''
         }}
       />

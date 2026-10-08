@@ -104,6 +104,7 @@ export default function GrokWorkspace() {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [results, setResults] = useState<ResultItem[]>([])
   const [selectedResults, setSelectedResults] = useState<number[]>([])
+  const [midCollapsed, setMidCollapsed] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [profiles, setProfiles] = useState<ProfileRow[]>([])
   const [manualName, setManualName] = useState('')
@@ -397,6 +398,24 @@ export default function GrokWorkspace() {
     flash('Đã xóa kết quả đã chọn')
   }
 
+  async function downloadSelected() {
+    const paths = results
+      .filter((x) => (selectedResults.length ? selectedResults.includes(x.id) : true) && x.path)
+      .map((x) => x.path!)
+    if (!paths.length) {
+      flash(selectedResults.length ? 'Các kết quả đã chọn chưa có file' : 'Chưa có file nào để tải')
+      return
+    }
+    try {
+      const dest = await pickFolder()
+      if (!dest) return
+      const r = await api<{ n: number }>('/api/util/copy-files', { paths, dest })
+      flash(`Đã chép ${r.n} file → ${dest}`)
+    } catch (e) {
+      flash(errText(e))
+    }
+  }
+
   function retryFailed() {
     const failed = results.filter((r) => r.status === 'error' && r.src)
     if (!failed.length) {
@@ -513,7 +532,7 @@ export default function GrokWorkspace() {
       </div>
 
       {view === 'studio' ? (
-        <div className="grok-studio">
+        <div className={`grok-studio${midCollapsed ? ' mid-collapsed' : ''}`}>
           {/* LEFT */}
           <aside className="grok-col grok-left">
             <div className="grok-label">CHẾ ĐỘ GROK</div>
@@ -762,8 +781,13 @@ export default function GrokWorkspace() {
           {/* MIDDLE */}
           <section className="grok-col grok-mid">
             <div className="grok-mid-head">
-              <button type="button" className="grok-icon-btn sm" title="Thu gọn" onClick={() => flash('Hàng đợi')}>
-                ←
+              <button
+                type="button"
+                className="grok-icon-btn sm"
+                title={midCollapsed ? 'Mở hàng đợi' : 'Thu gọn hàng đợi'}
+                onClick={() => setMidCollapsed((v) => !v)}
+              >
+                {midCollapsed ? '→' : '←'}
               </button>
               <span className="grok-round-badge">{queue.length}</span>
             </div>
@@ -823,8 +847,8 @@ export default function GrokWorkspace() {
                 </button>
                 <button
                   type="button"
-                  title="Tải xuống"
-                  onClick={() => flash(selectedResults.length ? `Mock tải ${selectedResults.length} file` : 'Chọn kết quả để tải')}
+                  title="Chép file đã chọn (hoặc tất cả) sang thư mục khác"
+                  onClick={() => void downloadSelected()}
                 >
                   ⬇
                 </button>
