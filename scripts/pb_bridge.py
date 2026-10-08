@@ -261,7 +261,10 @@ def phien_tk(email: str = "", bo_qua: set | None = None):
 
 # ───────────────────────── ảnh tham chiếu ─────────────────────────
 
-_MA = re.compile(r"(?:CHAR|BG|PROP|ENV|STYLE)_\d{1,3}", re.I)
+# Mã ảnh tham chiếu trong tên file: NHÓM_số + đuôi biến thể tuỳ chọn.
+#   CHAR_01_O4_lily.png → CHAR_01_O4 · GUEST_01_joe.png → GUEST_01 · BG_05_market.jpg → BG_05
+# (bản cũ chỉ biết CHAR/BG/PROP/ENV/STYLE và cắt mất «_O4» → prompt gọi @CHAR_01_O4 không khớp ảnh nào)
+_MA = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{2,12}_\d{1,3}(?:_[A-Za-z]{1,3}\d{1,3})*(?![0-9])")
 
 
 def ma_cua_anh(ten_file: str) -> str:
@@ -308,13 +311,14 @@ def chon_ref(prompt: str, refs: list[dict], tran: int = 10) -> list[str]:
     dau = ma_dau_prompt(prompt)
     if dau:
         theo_ma = {}
-        for r in refs:
-            p = r.get("path") or ""
-            if not os.path.isfile(p):
-                continue
-            for khoa in (ma_cua_anh(p), str(r.get("tag") or "").lstrip("@").upper()):
-                if khoa and khoa not in theo_ma:
-                    theo_ma[khoa] = p
+        co_file = [r for r in refs if os.path.isfile(r.get("path") or "")]
+        # Mã đọc từ TÊN FILE trước, nhãn (tag) sau — nhãn của ảnh tải lên từ bản cũ có thể thiếu «_O4»
+        for r in co_file:
+            theo_ma.setdefault(ma_cua_anh(r["path"]), r["path"])
+        for r in co_file:
+            nhan = str(r.get("tag") or "").lstrip("@").upper()
+            if nhan:
+                theo_ma.setdefault(nhan, r["path"])
         ra = []
         for ma in dau:
             p = theo_ma.get(ma)
