@@ -1072,14 +1072,12 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                   ))}
                 </select>
               </div>
-              <div className="vids-parallel-mini" title="Độ phân giải">
-                <select
-                  value={resolution}
-                  onChange={(e) => setResolution(e.target.value as '720p' | '1080p')}
-                >
-                  <option value="1080p">1080p</option>
-                  <option value="720p">720p</option>
-                </select>
+              <div className="vids-aspect st-res" title="Độ phân giải">
+                {(['720p', '1080p'] as const).map((r) => (
+                  <button key={r} type="button" className={resolution === r ? 'on' : ''} onClick={() => setResolution(r)}>
+                    {r}
+                  </button>
+                ))}
               </div>
               {dangChay && (
                 <button type="button" className="vids-ghost" onClick={stopAll}>

@@ -477,3 +477,9 @@
   .st-search input, .st-search .vids-search, .st-search .muse-search { width: 110px; }
   .st-size input { width: 70px; }
 }
+
+/* Danh sách thả xuống: nền tối chữ sáng (mặc định của trình duyệt là chữ trắng trên nền trắng) */
+.vids-root select, .muse-root select { color-scheme: dark; }
+.vids-root select option, .muse-root select option { background: #0f1722; color: #e7eef7; font-weight: 600; }
+.vids-root select option:checked, .muse-root select option:checked { background: #14532d; color: #fff; }
+.st-res button { min-width: 64px; font-weight: 700; font-variant-numeric: tabular-nums; }
