@@ -445,8 +445,12 @@ export default function GrokWorkspace() {
     if (name && name.trim()) void profileAction({ action: 'rename', id: p.id, name: name.trim() })
   }
 
-  function deleteProfile(id: number) {
-    void profileAction({ action: 'delete', ids: [id] })
+  async function deleteProfile(id: number) {
+    const p = profiles.find((x) => x.id === id)
+    const ten = p?.name || 'profile này'
+    const them = p?.addon === 'grok.com' ? ' (xoá cả hồ sơ Chrome đăng nhập của tài khoản)' : ''
+    if (!window.confirm(`Xoá «${ten}»${them}?`)) return
+    if (await profileAction({ action: 'delete', ids: [id] })) flash(`Đã xoá ${ten}`)
   }
 
   function selectAllProfiles(on: boolean) {
@@ -459,7 +463,8 @@ export default function GrokWorkspace() {
       flash('Chưa chọn profile')
       return
     }
-    void profileAction({ action: 'delete', ids })
+    if (!window.confirm(`Xoá ${ids.length} tài khoản đã chọn?`)) return
+    void profileAction({ action: 'delete', ids }).then((ok) => ok && flash(`Đã xoá ${ids.length} tài khoản`))
   }
 
   async function addManualProfile() {
@@ -1066,8 +1071,8 @@ export default function GrokWorkspace() {
                           Test
                         </button>
                       )}
-                      <button type="button" className="grok-outline-red" onClick={() => deleteProfile(p.id)}>
-                        Xóa
+                      <button type="button" className="grok-outline-red" onClick={() => void deleteProfile(p.id)}>
+                        🗑 Xóa
                       </button>
                     </td>
                   </tr>

@@ -2919,6 +2919,29 @@ def _che(p: dict) -> dict:
     return {**{x: y for x, y in p.items() if x != "key"}, "slug": slug}
 
 
+GOC_CHROME_GROK = os.path.join(LOCAL, "PBMedia", "chrome_grok")
+
+
+def _xoa_ho_so_grok(p: dict) -> None:
+    """Xoá hồ sơ Chrome riêng của tài khoản grok.com (thư mục do «Mở Grok để đăng nhập» tạo)."""
+    khoa = str(p.get("chrome_key") or p.get("email") or "").lower()
+    khoa = re.sub(r"[^a-z0-9._-]+", "_", khoa)[:60]
+    if not khoa:
+        return
+    thu_muc = os.path.join(GOC_CHROME_GROK, khoa)
+    if os.path.dirname(os.path.abspath(thu_muc)) != os.path.abspath(GOC_CHROME_GROK):
+        return
+    if os.path.isdir(thu_muc):
+        shutil.rmtree(thu_muc, ignore_errors=True)
+        log("🗑 Đã xoá hồ sơ Chrome của %s" % (p.get("name") or khoa), "INFO", "grok")
+
+
+def _id_moi(ds: list, moi: list) -> int:
+    """ID không trùng: lớn hơn mọi ID đã có (thêm nhanh trong cùng mili-giây vẫn khác nhau)."""
+    co = [int(p.get("id") or 0) for p in list(ds) + [x for x in moi if x]]
+    return max([int(time.time() * 1000)] + [x + 1 for x in co])
+
+
 def grok_profile_viec(d: dict) -> list[dict]:
     ds = grok_profiles()
     viec = str(d.get("action") or "list")
@@ -2929,7 +2952,7 @@ def grok_profile_viec(d: dict) -> list[dict]:
             if not dong:
                 continue
             ten, _, key = dong.rpartition("|") if "|" in dong else ("", "", dong)
-            moi.append({"id": int(time.time() * 1000) + len(moi), "name": ten.strip() or "Profile %d" % (len(ds) + len(moi) + 1),
+            moi.append({"id": _id_moi(ds, moi), "name": ten.strip() or "Profile %d" % (len(ds) + len(moi) + 1),
                         "key": key.strip(), "status": "untested", "created": time.strftime("%H:%M:%S %d/%m/%Y")})
         ds += moi
     elif viec == "add_web":
@@ -2954,7 +2977,7 @@ def grok_profile_viec(d: dict) -> list[dict]:
                 cu["status"] = "valid" if ten_ck & {"sso", "sso-rw"} else "untested"
                 moi.append(None)
                 continue
-            moi.append({"id": int(time.time() * 1000) + len(moi), "type": "web",
+            moi.append({"id": _id_moi(ds, moi), "type": "web",
                         "name": ten.strip() or email or "grok.com %d" % (len(ds) + len(moi) + 1),
                         "email": email, "chrome_key": khoa,
                         "key": ck, "status": "valid" if ten_ck & {"sso", "sso-rw"} else "untested",
@@ -2964,7 +2987,10 @@ def grok_profile_viec(d: dict) -> list[dict]:
             raise RuntimeError("Chưa dán cookie grok.com")
         ds += moi_that
     elif viec == "delete":
-        bo = set(d.get("ids") or [])
+        bo = {int(x) for x in d.get("ids") or [] if str(x).lstrip("-").isdigit()}
+        for p in ds:
+            if p.get("id") in bo and p.get("type") == "web":
+                _xoa_ho_so_grok(p)
         ds = [p for p in ds if p.get("id") not in bo]
     elif viec == "rename":
         for p in ds:
