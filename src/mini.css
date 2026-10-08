@@ -898,3 +898,5 @@
 }
 .wb-jobs { flex-shrink: 0; max-height: 220px; overflow: auto; padding: 0 16px 12px; }
 .wb-jobs:empty { display: none; }
+.sd-video { display: block; width: 100%; max-width: 520px; max-height: 300px; margin-top: 6px; border-radius: 10px; background: #000; }
+.ma-job { align-items: flex-start; }

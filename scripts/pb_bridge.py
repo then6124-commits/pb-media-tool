@@ -2704,6 +2704,104 @@ def grok_chay(d: dict) -> dict:
     return _chay_nen("grok", "%s · %s" % (mode, p.get("name")), out_dir, viec, "grok")
 
 
+# ───────────────────────── Seedance (BytePlus ModelArk) ─────────────────────────
+#
+# POST {base}/contents/generations/tasks  {model, content:[text, image_url…], ratio,
+# duration, resolution} → {id}; GET …/tasks/{id} tới khi status «succeeded» →
+# content.video_url. Khoá / base URL / model đặt ở tab Seedance (pb_bridge.json).
+
+OUT_SEEDANCE = os.path.join(OUT_MAC_DINH, "Seedance")
+SD_BASE = "https://ark.ap-southeast.bytepluses.com/api/v3"
+SD_MODEL = "seedance-1-0-pro-250528"
+
+
+def seedance_cfg(moi: dict | None = None) -> dict:
+    if moi:
+        cau_hinh({("seedance_" + k): str(v).strip() for k, v in moi.items()
+                  if k in ("key", "base", "model") and str(v).strip()})
+    cfg = cau_hinh()
+    k = str(cfg.get("seedance_key") or "")
+    return {"has_key": bool(k), "key_mask": (k[:4] + "…" + k[-4:]) if len(k) > 10 else "",
+            "base": cfg.get("seedance_base") or SD_BASE, "model": cfg.get("seedance_model") or SD_MODEL}
+
+
+def _sd_video(body: dict, out: str) -> str:
+    cfg = cau_hinh()
+    key = str(cfg.get("seedance_key") or os.environ.get("ARK_API_KEY") or "")
+    if not key:
+        raise RuntimeError("Chưa có API key ModelArk — nhập ở ⚙ Cấu hình API")
+    base = str(cfg.get("seedance_base") or SD_BASE).rstrip("/")
+    h = {"Authorization": "Bearer " + key}
+    ma, raw = _http_json(base + "/contents/generations/tasks", body, h, timeout=120)
+    if ma not in (200, 201):
+        raise RuntimeError("ModelArk HTTP %d: %s" % (ma, raw[:240].decode("utf-8", "replace")))
+    tid = json.loads(raw).get("id")
+    if not tid:
+        raise RuntimeError("ModelArk không trả id task")
+    for _ in range(240):
+        time.sleep(5)
+        ma, raw = _http_json(base + "/contents/generations/tasks/" + tid, None, h, timeout=60)
+        if ma != 200:
+            continue
+        data = json.loads(raw)
+        st = data.get("status")
+        if st == "succeeded":
+            url = (data.get("content") or {}).get("video_url")
+            if not url:
+                raise RuntimeError("Task xong nhưng không có video_url")
+            return _tai_url(url, out)
+        if st in ("failed", "cancelled", "expired"):
+            raise RuntimeError("Seedance %s: %s" % (st, (data.get("error") or {}).get("message") or ""))
+    raise RuntimeError("Seedance quá 20 phút chưa xong")
+
+
+def seedance_chay(d: dict) -> dict:
+    model = str(d.get("model") or cau_hinh().get("seedance_model") or SD_MODEL)
+    items = [{"id": x.get("id"), "prompt": str(x.get("prompt") or "").strip(),
+              "first": str(x.get("first") or ""), "last": str(x.get("last") or ""),
+              "status": "cho", "path": "", "msg": ""} for x in d.get("items") or []]
+    items = [x for x in items if x["prompt"] or os.path.isfile(x["first"])]
+    if not items:
+        raise RuntimeError("Chưa có prompt / ảnh nào")
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), time.strftime("%Y%m%d"), OUT_SEEDANCE)
+    lo = "%s_%s" % (time.strftime("%H%M%S"), uuid.uuid4().hex[:4])
+
+    def mot(i: int, it: dict) -> None:
+        it["status"] = "dang_chay"
+        content = [{"type": "text", "text": it["prompt"] or "natural cinematic motion"}]
+        for path, vai in ((it["first"], "first_frame"), (it["last"], "last_frame")):
+            if path and os.path.isfile(path):
+                content.append({"type": "image_url", "image_url": {"url": _data_uri(path)}, "role": vai})
+        body = {"model": model, "content": content,
+                "duration": int(re.sub(r"\D", "", str(d.get("duration") or "5")) or 5),
+                "resolution": str(d.get("resolution") or "720p"),
+                "watermark": False}
+        if not os.path.isfile(it["first"]):          # ảnh đầu quyết định khung khi có ảnh
+            body["ratio"] = str(d.get("ratio") or "16:9")
+        if d.get("audio"):
+            body["generate_audio"] = True
+        try:
+            it["path"] = _sd_video(body, os.path.join(out_dir, "%s_%02d.mp4" % (lo, i)))
+            it.update(status="xong", msg="")
+        except Exception as e:
+            it.update(status="loi", msg=str(e)[:300])
+            log("❌ Seedance #%d: %s" % (i, e), "LỖI", "seedance")
+
+    def viec(v):
+        v["items"] = items
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max(1, min(6, int(d.get("parallel") or 2)))) as tp:
+            list(tp.map(lambda a: mot(*a), enumerate(items, 1)))
+        loi = sum(1 for x in items if x["status"] == "loi")
+        v["msg"] = "Xong %d/%d" % (len(items) - loi, len(items))
+        if loi == len(items):
+            raise RuntimeError(items[0]["msg"])
+        return ""
+
+    log("▶ Seedance %s · %d việc" % (model, len(items)), "INFO", "seedance")
+    return _chay_nen("seedance", model, out_dir, viec, "seedance")
+
+
 # ───────────────────────── tiện ích ─────────────────────────
 
 def chon_thu_muc(goc: str = "") -> str:
@@ -2979,6 +3077,10 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "cfg": che,
                                         "gemini": len(gemini_keys_an_toan()),
                                         "eleven": len(eleven_keys())})
+            if u.path == "/api/seedance/config":
+                return self._json(200, {"ok": True, **seedance_cfg(d.get("set") if isinstance(d.get("set"), dict) else None)})
+            if u.path == "/api/seedance/run":
+                return self._json(200, {"ok": True, **seedance_chay(d)})
             if u.path == "/api/grok/profiles":
                 return self._json(200, {"ok": True, "profiles": grok_profile_viec(d)})
             if u.path == "/api/grok/run":

@@ -19,6 +19,7 @@ import CreatorWorkspace from './CreatorWorkspace'
 import VoiceWorkspace from './VoiceWorkspace'
 import TubeHunterWorkspace from './TubeHunterWorkspace'
 import MiniAppWorkspace from './MiniAppWorkspace'
+import SeedanceWorkspace from './SeedanceWorkspace'
 import GhepVideoWorkspace from './GhepVideoWorkspace'
 import SettingsTaiKhoan from './SettingsTaiKhoan'
 
@@ -2178,6 +2179,8 @@ export default function App() {
           <TubeHunterWorkspace />
         ) : top === 'mini' ? (
           <MiniAppWorkspace />
+        ) : top === 'seedance' ? (
+          <SeedanceWorkspace />
         ) : (
           <PlaceholderWorkspace
             title={TOP_TABS.find((t) => t.id === top)?.label || top}
