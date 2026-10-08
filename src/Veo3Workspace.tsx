@@ -520,7 +520,14 @@ export default function Veo3Workspace() {
   async function startModeReal() {
     try {
       let body: Record<string, unknown>
-      const base = { ratio, out_dir: outDir, workers: 8 }
+      // Cài đặt › Ảnh (pad/crop) — cầu nối khớp ảnh tham chiếu về đúng tỉ lệ khi bật Auto Crop
+      let cropMode = 'pad'
+      try {
+        cropMode = JSON.parse(localStorage.getItem('pb.settings.img.mode') || '"pad"') === 'crop' ? 'crop' : 'pad'
+      } catch {
+        /* mặc định pad */
+      }
+      const base = { ratio, out_dir: outDir, workers: 8, auto_crop: autoCrop, crop_mode: cropMode }
       if (mode === 'image') {
         pushLog(`⬆ Gửi ${images.length} ảnh lên tool…`)
         const items = []

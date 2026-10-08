@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react'
+﻿import { useEffect, useRef, useState } from 'react'
 import {
   fetchAccountInfo,
   grabCookiesFromBrowser,
@@ -20,6 +20,7 @@ import VoiceWorkspace from './VoiceWorkspace'
 import TubeHunterWorkspace from './TubeHunterWorkspace'
 import MiniAppWorkspace from './MiniAppWorkspace'
 import SeedanceWorkspace from './SeedanceWorkspace'
+import { api as bridgeApi, errText, openFolder, pickFolder, useJobs } from './bridge'
 import GhepVideoWorkspace from './GhepVideoWorkspace'
 import SettingsTaiKhoan from './SettingsTaiKhoan'
 
@@ -336,128 +337,124 @@ function uid(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
 }
 
+type LicenseInfo = {
+  available: boolean
+  ok?: boolean
+  msg?: string
+  days?: number | null
+  name?: string
+  machine_id?: string
+}
+
 function SettingsUser() {
-  const [loggedIn, setLoggedIn] = usePref('pb.settings.user.loggedIn', true)
-  const [email, setEmail] = usePref('pb.settings.user.email', 'user@pbmedia.local')
-  const [daysLeft, setDaysLeft] = usePref('pb.settings.user.daysLeft', 1)
-  const [plan, setPlan] = usePref('pb.settings.user.plan', 'Pro · mock')
-  const [device, setDevice] = usePref('pb.settings.user.device', 'PB-MEDIA-DEMO-001')
+  const [lic, setLic] = useState<LicenseInfo | null>(null)
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
   const [flash, setFlash] = useState('')
 
   const showFlash = (m: string) => {
     setFlash(m)
-    window.setTimeout(() => setFlash(''), 1800)
+    window.setTimeout(() => setFlash(''), 2400)
+  }
+
+  const load = async (online = false) => {
+    try {
+      setLic(await bridgeApi<LicenseInfo>('/api/license', { online }))
+    } catch (e) {
+      showFlash(errText(e))
+    }
+  }
+
+  useEffect(() => {
+    void load()
+  }, [])
+
+  const activate = async () => {
+    if (!key.trim()) return showFlash('Chưa dán mã kích hoạt')
+    setBusy(true)
+    try {
+      setLic(await bridgeApi<LicenseInfo>('/api/license', { action: 'activate', key }))
+      setKey('')
+      showFlash('Đã kích hoạt')
+    } catch (e) {
+      showFlash(errText(e))
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
     <div className="settings-panel">
       <div className="panel-card user-card">
         <h3>
-          <span className="ico">👤</span> Thông tin tài khoản
+          <span className="ico">👤</span> Bản quyền
         </h3>
-
-        {loggedIn ? (
+        {!lic ? (
+          <p className="muted sm">Đang đọc…</p>
+        ) : !lic.available ? (
+          <p className="muted sm">
+            Không thấy license_manager của tool cũ (PB_TOOL_DIR). App mới không cần đăng nhập — các tab dùng khoá API
+            nhập ở «Tài khoản».
+          </p>
+        ) : (
           <>
             <div className="user-top">
               <div className="user-email">
                 <span className="user-avatar">👤</span>
-                <input
-                  className="input inline-edit"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  aria-label="Email"
-                />
+                <strong>{lic.name || 'PB MEDIA'}</strong>
               </div>
               <span className="user-verified">
-                <span className="check-box">✓</span> Đã xác thực
+                <span className="check-box">{lic.ok ? '✓' : '✕'}</span> {lic.ok ? 'Đã kích hoạt' : lic.msg}
               </span>
             </div>
-
-            <div className="info-row">
-              <span className="label">
-                <span className="row-ico">⏱</span> Thời hạn sử dụng
-              </span>
-              <span className={`value ${daysLeft <= 3 ? 'warn-text' : 'accent'} days-edit`}>
-                Còn{' '}
-                <input
-                  className="input tiny-num"
-                  type="number"
-                  min={0}
-                  max={999}
-                  value={daysLeft}
-                  onChange={(e) => setDaysLeft(Math.max(0, Number(e.target.value) || 0))}
-                />{' '}
-                ngày
-              </span>
-            </div>
-
-            {daysLeft <= 3 && (
-              <div className="warn-banner">
-                Tài khoản sắp hết hạn. Vui lòng gia hạn để tiếp tục sử dụng.
+            {lic.ok && (
+              <div className="info-row">
+                <span className="label">
+                  <span className="row-ico">⏱</span> Thời hạn sử dụng
+                </span>
+                <span className={`value ${(lic.days ?? 999) <= 7 ? 'warn-text' : 'accent'}`}>
+                  {lic.days == null ? 'Không giới hạn' : `Còn ${lic.days} ngày`}
+                </span>
               </div>
             )}
-
+            {lic.ok && (lic.days ?? 999) <= 7 && (
+              <div className="warn-banner">Sắp hết hạn — liên hệ người bán để gia hạn (gửi mã máy bên dưới).</div>
+            )}
             <div className="info-row">
-              <span className="label">Gói</span>
-              <input
-                className="input inline-edit right"
-                value={plan}
-                onChange={(e) => setPlan(e.target.value)}
-              />
+              <span className="label">Mã máy</span>
+              <span className="value">
+                <code>{lic.machine_id}</code>{' '}
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(lic.machine_id || '')
+                    showFlash('Đã sao chép mã máy')
+                  }}
+                >
+                  Copy
+                </button>
+              </span>
             </div>
-            <div className="info-row">
-              <span className="label">Thiết bị</span>
-              <input
-                className="input inline-edit right"
-                value={device}
-                onChange={(e) => setDevice(e.target.value)}
-              />
-            </div>
-
-            <div className="user-actions">
-              <button
-                type="button"
-                className="btn teal sm"
-                onClick={() => showFlash('Đã lưu thông tin (localStorage)')}
-              >
-                💾 Lưu thay đổi
-              </button>
-              <button
-                type="button"
-                className="btn logout"
-                onClick={() => {
-                  setLoggedIn(false)
-                  showFlash('Đã đăng xuất (mock)')
-                }}
-              >
-                ⎋ Đăng xuất
-              </button>
-            </div>
-            <Flash text={flash} />
-          </>
-        ) : (
-          <>
-            <p className="muted sm">Chưa đăng nhập (mock UI).</p>
             <div className="login-form">
               <input
                 className="input full"
-                placeholder="Email đăng nhập mock…"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                placeholder={lic.ok ? 'Dán mã mới để gia hạn…' : 'Dán mã kích hoạt…'}
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
               />
-              <button
-                type="button"
-                className="btn primary"
-                onClick={() => {
-                  setLoggedIn(true)
-                  if (daysLeft <= 0) setDaysLeft(30)
-                }}
-              >
-                Đăng nhập
+              <button type="button" className="btn primary" disabled={busy} onClick={() => void activate()}>
+                {busy ? 'Đang kích hoạt…' : 'Kích hoạt'}
+              </button>
+            </div>
+            <div className="user-actions">
+              <button type="button" className="btn teal sm" onClick={() => void load(true)}>
+                ↻ Kiểm tra với máy chủ
               </button>
             </div>
           </>
         )}
+        <Flash text={flash} />
       </div>
     </div>
   )
@@ -1427,36 +1424,38 @@ function SettingsDownload() {
   const [prefixOn, setPrefixOn] = usePref('pb.settings.dl.prefixOn', true)
   const [prefix, setPrefix] = usePref('pb.settings.dl.prefix', 'video')
   const [overwrite, setOverwrite] = usePref('pb.settings.dl.overwrite', false)
-  const [outPath, setOutPath] = usePref('pb.settings.dl.path', 'K:\\Output\\PB_MEDIA')
-  const [log, setLog] = usePref<string[]>('pb.settings.dl.log', [])
+  const [outPath, setOutPath] = useState('')
   const [flash, setFlash] = useState('')
+
+  useEffect(() => {
+    bridgeApi<{ out_root: string }>('/api/version', {})
+      .then((v) => setOutPath(v.out_root))
+      .catch(() => {})
+  }, [])
+
+  const saveRoot = async (path: string) => {
+    try {
+      await bridgeApi('/api/config/bridge', { set: { out_root: path.trim() } })
+      const v = await bridgeApi<{ out_root: string }>('/api/version', {})
+      setOutPath(v.out_root)
+      showFlash('Đã lưu — mọi tab lưu vào thư mục này')
+    } catch (e) {
+      showFlash(errText(e))
+    }
+  }
 
   const showFlash = (m: string) => {
     setFlash(m)
     window.setTimeout(() => setFlash(''), 1800)
   }
 
-  const pickFolderMock = () => {
-    const samples = [
-      'K:\\Output\\PB_MEDIA',
-      'K:\\Output\\Veo3',
-      'D:\\Downloads\\PB_MEDIA',
-      'C:\\Users\\Admin\\Videos\\PB_MEDIA',
-    ]
-    const next = samples[(samples.indexOf(outPath) + 1) % samples.length] || samples[0]
-    setOutPath(next)
-    showFlash('Đã chọn thư mục (mock picker)')
-  }
-
-  const runMockDownload = () => {
-    if (!autoDl) {
-      showFlash('Tự động tải đang TẮT — bật để mock tải')
-      return
+  const pickRoot = async () => {
+    try {
+      const d = await pickFolder(outPath)
+      if (d) void saveRoot(d)
+    } catch (e) {
+      showFlash(errText(e))
     }
-    const name = mockDownloadName(prefixOn, prefix, overwrite, 1)
-    const line = `[mock] -> ${outPath}\\${name}`
-    setLog((prev) => [line, ...prev].slice(0, 8))
-    showFlash(`Mock tải: ${name}`)
   }
 
   return (
@@ -1473,13 +1472,21 @@ function SettingsDownload() {
               className="input full path-input"
               value={outPath}
               onChange={(e) => setOutPath(e.target.value)}
+              onBlur={() => void saveRoot(outPath)}
               placeholder="Đường dẫn thư mục…"
             />
-            <button type="button" className="btn teal" onClick={pickFolderMock}>
+            <button type="button" className="btn teal" onClick={() => void pickRoot()}>
               Chọn
             </button>
+            <button type="button" className="btn" onClick={() => openFolder(outPath)}>
+              Mở
+            </button>
           </div>
-          <p className="muted sm">Mock path picker — chỉ lưu localStorage, không mở dialog hệ thống.</p>
+          <p className="muted sm">
+            Thư mục gốc của mọi tab (Veo3, Tạo ảnh, InVideo, Grok, Seedance, MiniApp…), mỗi tab một thư mục con. Tab
+            nào đã chọn thư mục riêng thì giữ thư mục đó.
+          </p>
+          <Flash text={flash} />
         </div>
 
         <div className="setting-block">
@@ -1533,25 +1540,10 @@ function SettingsDownload() {
           </p>
         </div>
 
-        <div className="setting-block">
-          <p className="block-label">Thử hành vi mock</p>
-          <button type="button" className="btn primary" onClick={runMockDownload}>
-            ▶ Mock tải 1 file
-          </button>
-          <Flash text={flash} />
-          {log.length > 0 && (
-            <div className="dl-log">
-              {log.map((l, i) => (
-                <div key={`${l}-${i}`} className="dl-log-line">
-                  {l}
-                </div>
-              ))}
-              <button type="button" className="btn sm" onClick={() => setLog([])}>
-                Xoá log
-              </button>
-            </div>
-          )}
-        </div>
+        <p className="muted sm">
+          Tự động tải / prefix / ghi đè: lưu cho máy này. Tool Flow luôn tự tải video về khi xong và đặt tên theo số
+          cảnh (001.mp4…), không ghi đè file cũ.
+        </p>
       </div>
     </div>
   )
@@ -1651,8 +1643,8 @@ function SettingsImage() {
 
         <div className="note-banner">
           💡 Đang chọn: <strong>{cropMode === 'pad' ? 'Pad' : 'Crop'}</strong> · tỉ lệ preview{' '}
-          {ratio}. Cài đặt lưu localStorage — áp dụng khi bật &apos;Tự động pad/crop ảnh tham
-          chiếu&apos; trong form tạo.
+          {ratio}. Áp dụng cho ảnh tham chiếu / ảnh Image To Video của Veo3 khi bật &apos;Auto Crop&apos; trong
+          form tạo — cầu nối pad/crop đúng tỉ lệ khung trước khi gửi Flow.
         </div>
       </div>
     </div>
@@ -1670,6 +1662,27 @@ function SettingsAdvanced() {
   const [confirmKill, setConfirmKill] = useState(false)
   const [killed, setKilled] = useState('')
   const [flash, setFlash] = useState('')
+  const firstSync = useRef(true)
+
+  // Đồng bộ sang cầu nối (proxy áp vào biến môi trường của tiến trình Python, System Mode đổi bộ mint)
+  useEffect(() => {
+    const t = window.setTimeout(
+      () => {
+        firstSync.current = false
+        void bridgeApi('/api/config/bridge', {
+          set: {
+            proxy_on: proxyOn,
+            proxies: proxies.join('\n'),
+            proxy_rotate_on: rotateOn,
+            proxy_rotate_url: rotateUrl,
+            token_system: tokenMode,
+          },
+        }).catch(() => {})
+      },
+      firstSync.current ? 0 : 600,
+    )
+    return () => window.clearTimeout(t)
+  }, [proxyOn, proxies, rotateOn, rotateUrl, tokenMode])
 
   const showFlash = (m: string) => {
     setFlash(m)
@@ -1695,13 +1708,15 @@ function SettingsAdvanced() {
     setProxies((prev) => prev.filter((_, i) => i !== idx))
   }
 
-  const doKill = () => {
+  const doKill = async () => {
     setConfirmKill(false)
-    setKilled('Đang dọn processes mock…')
-    window.setTimeout(() => {
-      setKilled('Đã Kill All Processes (mock UI — không đụng process hệ thống).')
-      window.setTimeout(() => setKilled(''), 2500)
-    }, 600)
+    setKilled('Đang dọn processes…')
+    try {
+      const r = await bridgeApi<{ lines: string[] }>('/api/util/kill', {})
+      setKilled(r.lines.join(' · '))
+    } catch (e) {
+      setKilled(errText(e))
+    }
   }
 
   return (
@@ -1716,21 +1731,21 @@ function SettingsAdvanced() {
       </div>
 
       <div className="panel-card">
-        <h4>Chế độ lấy token (mock)</h4>
-        <p className="muted sm">Tuỳ chọn UI — không bypass / không đọc extension thật.</p>
+        <h4>Chế độ lấy token</h4>
+        <p className="muted sm">Cách đúc token reCAPTCHA cho Flow / Veo3.</p>
         <div className="adv-row">
           <div>
             <strong>Ưu tiên System Mode</strong>
             <p className="muted sm">
               <span className="blue-dot">🔵</span>
-              {tokenMode ? 'Đang dùng System Mode (mock)' : 'Chế độ mặc định (mock)'}
+              {tokenMode ? 'System Mode — sidecar Chrome riêng' : 'Mặc định — tiện ích Chrome (sidecar dự phòng)'}
             </p>
           </div>
           <Toggle on={tokenMode} onChange={setTokenMode} />
         </div>
         <div className="info-callout">
           <strong>ℹ System Mode</strong>
-          <p>Không cần Chrome Extension nhưng có thể chậm hơn. (mô tả UI — chưa nối backend)</p>
+          <p>Không cần Chrome Extension nhưng có thể chậm hơn (CAPCUT_MINT_PRIMARY=sidecar).</p>
         </div>
       </div>
 
@@ -1809,7 +1824,7 @@ function SettingsAdvanced() {
               <div>
                 <strong>Bật xoay proxy</strong>
                 <p className="muted sm">
-                  {rotateOn ? 'Đang xoay theo URL/API (mock)' : 'Tắt xoay — dùng list tuần tự'}
+                  {rotateOn ? 'Lấy ip:port từ URL mỗi lần lưu' : 'Tắt xoay — dùng proxy đầu list'}
                 </p>
               </div>
               <Toggle
@@ -1822,7 +1837,7 @@ function SettingsAdvanced() {
             </div>
             <input
               className="input full"
-              placeholder="URL proxy xoay / API endpoint (mock)"
+              placeholder="URL API trả về ip:port (hoặc ip:port:user:pass)"
               value={rotateUrl}
               onChange={(e) => setRotateUrl(e.target.value)}
               disabled={!proxyOn}
@@ -1835,8 +1850,8 @@ function SettingsAdvanced() {
       <div className="panel-card">
         <h4>Dọn dẹp Processes</h4>
         <p className="muted sm">
-          Kill tất cả processes dư thừa do app tạo ra khi generate token. (nút mock — không kill
-          process hệ thống)
+          Kill Chrome hồ sơ PBMedia (browser_1..4), Chrome/Node của bộ mint token và realesrgan còn treo. Không đụng
+          Chrome thường của bạn.
         </p>
         {!confirmKill ? (
           <button type="button" className="btn logout full" onClick={() => setConfirmKill(true)}>
@@ -1845,11 +1860,10 @@ function SettingsAdvanced() {
         ) : (
           <div className="confirm-box">
             <p>
-              Xác nhận Kill All Processes (mock)? Thao tác chỉ hiện thông báo UI — không đụng
-              process máy.
+              Xác nhận Kill All Processes? Mẻ Flow / Veo3 đang chạy sẽ bị dừng.
             </p>
             <div className="acct-actions">
-              <button type="button" className="btn logout" onClick={doKill}>
+              <button type="button" className="btn logout" onClick={() => void doKill()}>
                 Xác nhận Kill
               </button>
               <button type="button" className="btn sm" onClick={() => setConfirmKill(false)}>
@@ -1865,45 +1879,21 @@ function SettingsAdvanced() {
 }
 
 function SettingsChrome() {
-  const [flash, setFlash] = useState('')
-  const [dlBusy, setDlBusy] = useState(false)
-  const [dlDone, setDlDone] = useState(false)
+  const [st, setSt] = useState<{ available: boolean; connected?: boolean; error?: string } | null>(null)
 
-  const showFlash = (m: string) => {
-    setFlash(m)
-    window.setTimeout(() => setFlash(''), 2200)
+  const load = async (start = false) => {
+    try {
+      setSt(await bridgeApi('/api/ext/status', { start }))
+    } catch (e) {
+      setSt({ available: false, error: errText(e) })
+    }
   }
 
-  const mockDownload = () => {
-    setDlBusy(true)
-    window.setTimeout(() => {
-      setDlBusy(false)
-      setDlDone(true)
-      // Mock zip download — local blob only, no real extension payload.
-      try {
-        const blob = new Blob(
-          [
-            'PB MEDIA mock Chrome Extension package\\n',
-            'version: 3.7.8\\n',
-            'This is a UI mock zip. Place a real unpacked folder with manifest.json yourself.\\n',
-            'No automation / no cookie access in this mock.\\n',
-          ],
-          { type: 'application/zip' },
-        )
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = 'pb-media-chrome-extension-v3.7.8-mock.zip'
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
-        URL.revokeObjectURL(url)
-      } catch {
-        /* ignore */
-      }
-      showFlash('Đã tải mock zip v3.7.8 (local)')
-    }, 700)
-  }
+  useEffect(() => {
+    void load()
+    const t = window.setInterval(() => void load(), 4000)
+    return () => window.clearInterval(t)
+  }, [])
 
   return (
     <div className="settings-panel sv-chrome">
@@ -1911,45 +1901,47 @@ function SettingsChrome() {
         <h3>
           <span className="ico">🧩</span> Chrome Extension
         </h3>
+        <span className="gateway-pill live">
+          <i className="dot" />{' '}
+          {!st ? '…' : !st.available ? 'Không có bộ mint' : st.connected ? 'Tiện ích đã nối' : 'Chưa nối'}
+        </span>
       </div>
 
       <div className="panel-card">
-        <h4>Tải và cài đặt</h4>
+        <h4>Kết nối</h4>
         <p className="muted sm">
-          Extension lấy reCAPTCHA token trực tiếp từ Chrome. Cài một lần, rồi bật ở tab Nâng cao khi cần.
-          (UI mock — không đọc extension / cookie thật.)
+          Tiện ích chạy trong Chrome thật của bạn, đúc token reCAPTCHA ngay trong tab Flow rồi đẩy về app qua{' '}
+          <code>ws://127.0.0.1:3458/ws</code>. App dùng đúng giao thức của tiện ích «Cookie-Editor + Recaptcha
+          Pusher» (SuperVeo) — cài tiện ích đó là dùng được.
         </p>
-        <button type="button" className="btn teal full sv-ext-dl" disabled={dlBusy} onClick={mockDownload}>
-          {dlBusy ? 'Đang tạo file mock…' : '⬇ Tải Chrome Extension (v3.7.8)'}
+        {st?.error && <p className="muted sm">⚠ {st.error}</p>}
+        <button type="button" className="btn teal full" onClick={() => void load(true)}>
+          ⚡ Mở cổng 3458 ngay (để tiện ích nối trước mẻ đầu)
         </button>
-        {dlDone ? <p className="muted sm ok-flash">Đã tải pb-media-chrome-extension-v3.7.8-mock.zip</p> : null}
       </div>
 
       <div className="panel-card">
         <h4>Hướng dẫn cài đặt</h4>
         <ol className="sv-ext-steps">
           <li>
-            <strong>Tải và giải nén</strong>
-            <p className="muted sm">Tải zip rồi giải nén vào thư mục cố định (không để trong Downloads tạm).</p>
+            <strong>Có thư mục tiện ích</strong>
+            <p className="muted sm">Thư mục chứa manifest.json của tiện ích (giải nén vào chỗ cố định).</p>
           </li>
           <li>
             <strong>Mở trang quản lý extension</strong>
             <p className="muted sm">
-              Trong Chrome mở <code>chrome://extensions</code>.
+              Trong Chrome mở <code>chrome://extensions</code>, bật Developer mode.
             </p>
           </li>
           <li>
-            <strong>Bật Developer mode</strong>
-            <p className="muted sm">Bật công tắc Developer mode góc phải trên trang Extensions.</p>
-          </li>
-          <li>
             <strong>Load unpacked</strong>
-            <p className="muted sm">Bấm &quot;Load unpacked&quot; và chọn đúng thư mục đã giải nén ở bước 1.</p>
+            <p className="muted sm">Bấm &quot;Load unpacked&quot; và chọn thư mục chứa manifest.json.</p>
           </li>
           <li>
             <strong>Mở tab Flow</strong>
             <p className="muted sm">
-              Mở và đăng nhập <code>flow.google.com</code> — extension cần tab này đang mở để hoạt động (mô tả UI).
+              Mở và đăng nhập <code>flow.google.com</code> — tiện ích cần tab này để đúc token. Trạng thái ở góc trên
+              chuyển «Tiện ích đã nối».
             </p>
           </li>
         </ol>
@@ -1958,49 +1950,44 @@ function SettingsChrome() {
       <div className="sv-ext-warn">
         <strong>⚠ Lưu ý</strong>
         <ul>
-          <li>
-            Khi Load unpacked phải chọn đúng thư mục <strong>chứa file manifest.json</strong>, không chọn thư mục cha.
-          </li>
-          <li>
-            Bỏ qua thư mục <code>__MACOSX</code> nếu zip có (thường gặp trên Mac).
-          </li>
-          <li>
-            Cập nhật: tải bản mới → giải nén đè lên thư mục cũ → bấm Reload trên <code>chrome://extensions</code>.
-          </li>
+          <li>Không muốn cài tiện ích: bật System Mode ở «Nâng cao» (chậm hơn).</li>
+          <li>Service worker của Chrome ngủ khi rảnh — nối có thể chậm vài giây sau khi mở tab Flow.</li>
         </ul>
       </div>
-
-      {flash ? <p className="muted sm ok-flash">{flash}</p> : null}
     </div>
   )
 }
 
 
-function SettingsVersion() {
-  const [checking, setChecking] = useState(false)
-  const [msg, setMsg] = useState('')
-  const [lastCheck, setLastCheck] = usePref('pb.settings.ver.lastCheck', '')
-  const [channel, setChannel] = usePref<'stable' | 'beta'>('pb.settings.ver.channel', 'stable')
+type VersionInfo = {
+  python: string
+  tool_dir: string
+  tool_ok: boolean
+  out_root: string
+  ffmpeg: string
+  ytdlp: string
+  extension: boolean | null
+}
 
-  const checkUpdate = () => {
-    setChecking(true)
-    setMsg('Đang kiểm tra cập nhật…')
-    window.setTimeout(() => {
-      const now = new Date()
-      const stamp = now.toLocaleString('vi-VN', { hour12: false })
-      setLastCheck(stamp)
-      // Realistic mock: mostly up-to-date, sometimes suggest beta
-      const roll = Math.random()
-      if (channel === 'beta' && roll > 0.45) {
-        setMsg('Có bản beta mới: v0.1.1-beta (mock) — tải khi nối backend.')
-      } else if (roll > 0.85) {
-        setMsg('Có bản mới: v0.1.1 (mock). Bạn đang ở v0.1.0.')
-      } else {
-        setMsg('Đã là bản mới nhất v0.1.0 (mock).')
-      }
-      setChecking(false)
-    }, 1100)
-  }
+function SettingsVersion() {
+  const [v, setV] = useState<VersionInfo | null>(null)
+  const [err, setErr] = useState('')
+  const [upId, setUpId] = useState('')
+  const jobs = useJobs(['update-ytdlp'])
+  const up = jobs.find((j) => j.id === upId)
+
+  const load = () =>
+    bridgeApi<VersionInfo>('/api/version', {})
+      .then(setV)
+      .catch((e) => setErr(errText(e)))
+
+  useEffect(() => {
+    void load()
+  }, [])
+
+  useEffect(() => {
+    if (up && up.status !== 'dang_chay') void load()
+  }, [up?.status])
 
   return (
     <div className="settings-panel">
@@ -2010,48 +1997,61 @@ function SettingsVersion() {
         </h3>
         <div className="info-row">
           <span className="label">PB MEDIA</span>
-          <span className="value accent">v0.1.0 · mock UI</span>
+          <span className="value accent">v0.1.0</span>
         </div>
         <div className="info-row">
           <span className="label">Khung</span>
-          <span className="value">Tauri + React + Vite</span>
+          <span className="value">Tauri + React + Vite · cầu nối Python</span>
         </div>
-        <div className="info-row">
-          <span className="label">Kênh cập nhật</span>
-          <span className="value">
-            <span className="seg compact">
-              <button
-                type="button"
-                className={`seg-btn ${channel === 'stable' ? 'on' : ''}`}
-                onClick={() => setChannel('stable')}
-              >
-                Stable
-              </button>
-              <button
-                type="button"
-                className={`seg-btn ${channel === 'beta' ? 'on' : ''}`}
-                onClick={() => setChannel('beta')}
-              >
-                Beta
-              </button>
-            </span>
-          </span>
+        {err && <p className="muted sm">⚠ {err}</p>}
+        {v && (
+          <>
+            <div className="info-row">
+              <span className="label">Python</span>
+              <span className="value">{v.python}</span>
+            </div>
+            <div className="info-row">
+              <span className="label">Tool cũ</span>
+              <span className={`value ${v.tool_ok ? '' : 'warn-text'}`}>
+                {v.tool_dir} {v.tool_ok ? '' : '(không thấy)'}
+              </span>
+            </div>
+            <div className="info-row">
+              <span className="label">Thư mục lưu</span>
+              <span className="value">{v.out_root}</span>
+            </div>
+            <div className="info-row">
+              <span className="label">FFmpeg</span>
+              <span className={`value ${v.ffmpeg ? '' : 'warn-text'}`}>{v.ffmpeg || 'Chưa cài'}</span>
+            </div>
+            <div className="info-row">
+              <span className="label">yt-dlp</span>
+              <span className={`value ${v.ytdlp ? '' : 'warn-text'}`}>{v.ytdlp || 'Chưa cài'}</span>
+            </div>
+            <div className="info-row">
+              <span className="label">Tiện ích Chrome</span>
+              <span className="value">{v.extension == null ? '—' : v.extension ? 'Đã nối' : 'Chưa nối'}</span>
+            </div>
+          </>
+        )}
+        <div className="acct-actions">
+          <button type="button" className="btn" onClick={() => void load()}>
+            ↻ Kiểm tra lại
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={!v?.ytdlp || up?.status === 'dang_chay'}
+            onClick={() =>
+              void bridgeApi<{ id: string }>('/api/util/update-ytdlp', {})
+                .then((r) => setUpId(r.id))
+                .catch((e) => setErr(errText(e)))
+            }
+          >
+            {up?.status === 'dang_chay' ? 'Đang cập nhật yt-dlp…' : '⬆ Cập nhật yt-dlp'}
+          </button>
         </div>
-        <div className="info-row">
-          <span className="label">Học layout</span>
-          <span className="value">SuperVeo-style (không copy mã)</span>
-        </div>
-        <div className="info-row">
-          <span className="label">Kiểm tra lần cuối</span>
-          <span className="value">{lastCheck || 'Chưa kiểm tra'}</span>
-        </div>
-        <div className="info-row">
-          <span className="label">Kết quả</span>
-          <span className="value">{msg || '—'}</span>
-        </div>
-        <button type="button" className="btn primary" disabled={checking} onClick={checkUpdate}>
-          {checking ? 'Đang kiểm tra…' : 'Kiểm tra cập nhật'}
-        </button>
+        {up && up.status !== 'dang_chay' && <p className="muted sm">{up.msg}</p>}
       </div>
     </div>
   )

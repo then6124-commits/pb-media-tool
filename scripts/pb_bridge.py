@@ -535,6 +535,21 @@ def ma_video(nhan: str, giay: str) -> str:
     return bac.get(giay) or bac.get("8s") or next(iter(bac.values()), "veo_3_1_t2v_lite")
 
 
+def _khop_khung(src: str, dst: str, ratio: str, mode: str) -> str:
+    """Ảnh → đúng tỉ lệ khung: pad (viền đen, giữ đủ ảnh) hoặc crop (cắt giữa, không viền)."""
+    m = re.match(r"(\d+):(\d+)", ratio or "")
+    a, b = (int(m.group(1)), int(m.group(2))) if m else (16, 9)
+    w = 1920 if a >= b else int(1920 * a / b) // 2 * 2
+    h = int(w * b / a) // 2 * 2 if a >= b else 1920
+    if mode == "crop":
+        vf = "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d" % (w, h, w, h)
+    else:
+        vf = "scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black" % (w, h, w, h)
+    subprocess.run([_exe("ffmpeg"), "-y", "-v", "error", "-i", src, "-vf", vf, "-frames:v", "1", dst],
+                   check=True, creationflags=_KHONG_CUA_SO)
+    return dst
+
+
 class LoFlow:
     def __init__(self):
         self.lock = threading.Lock()
@@ -630,8 +645,16 @@ class LoFlow:
             lo_dir = os.path.join(REF_DIR, "lo_" + uuid.uuid4().hex[:8])
             os.makedirs(lo_dir, exist_ok=True)
 
+            # Cài đặt › Ảnh: pad/crop ảnh tham chiếu về đúng tỉ lệ khi form bật Auto Crop
+            khop = str(d.get("crop_mode") or "") if d.get("auto_crop") else ""
+
             def _chep(src: str, ten: str) -> str:
                 dst = os.path.join(lo_dir, ten + os.path.splitext(src)[1].lower())
+                if khop in ("pad", "crop") and src.lower().endswith(DUOI_ANH):
+                    try:
+                        return _khop_khung(src, os.path.splitext(dst)[0] + ".png", str(d.get("ratio") or "16:9"), khop)
+                    except Exception as e:
+                        log("⚠ Không %s được %s: %s" % (khop, os.path.basename(src), e), "INFO", "flow")
                 shutil.copy2(src, dst)
                 return dst
 
@@ -3141,6 +3164,158 @@ def veo3_kich_ban(d: dict) -> dict:
     return _chay_nen("veo3-script", str(d.get("title") or nguon), "", viec, "flow")
 
 
+# ───────────────────────── Cài đặt ─────────────────────────
+
+def ap_thu_muc_goc() -> str:
+    """Thư mục gốc lưu mọi thứ (Cài đặt › Tải xuống) → cập nhật các OUT_* của từng tab."""
+    g = globals()
+    goc = str(cau_hinh().get("out_root") or "").strip()
+    if not (goc and os.path.isabs(goc)):
+        goc = os.path.join(os.path.expanduser("~"), "Videos", "PB_MEDIA")
+    g["OUT_MAC_DINH"] = goc
+    for ten, con in (("OUT_MINI", "MiniApp"), ("OUT_INVIDEO", "InVideo"), ("OUT_CREATOR", "Creator"),
+                     ("OUT_GROK", "Grok"), ("OUT_SEEDANCE", "Seedance")):
+        g[ten] = os.path.join(goc, con)
+    return goc
+
+
+def _che_proxy(raw: str) -> str:
+    """Giấu tài khoản proxy: user:pass@host:port → ***@host:port · host:port:user:pass → host:port:***."""
+    ra = []
+    for dong in raw.splitlines():
+        dong = re.sub(r"[^:@\s/]+:[^@\s]+@", "***@", dong.strip())
+        phan = dong.split(":")
+        ra.append(":".join(phan[:2] + ["***"]) if len(phan) >= 4 and "@" not in dong else dong)
+    return "\n".join(ra)
+
+
+def ap_proxy() -> str:
+    """Proxy (Cài đặt › Nâng cao) → biến môi trường của tiến trình cầu nối: urllib/requests của
+    cầu nối và tool cũ đều đi qua. Proxy xoay: lấy «ip:port» từ URL API mỗi lần lưu / bấm áp dụng."""
+    cfg = cau_hinh()
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        os.environ.pop(k, None)
+    if not cfg.get("proxy_on"):
+        return ""
+    p = ""
+    if cfg.get("proxy_rotate_on") and str(cfg.get("proxy_rotate_url") or "").startswith("http"):
+        import urllib.request
+        try:
+            p = urllib.request.urlopen(str(cfg["proxy_rotate_url"]), timeout=20).read(300).decode().strip()
+        except Exception as e:
+            log("⚠ Không lấy được proxy xoay: %s" % e, "INFO", "bridge")
+    if not p:
+        ds = _ds_khoa(cfg.get("proxies"))
+        p = ds[0] if ds else ""
+    if not p:
+        return ""
+    # host:port:user:pass → user:pass@host:port
+    phan = p.replace("http://", "").split(":")
+    if len(phan) == 4 and "@" not in p:
+        p = "%s:%s@%s:%s" % (phan[2], phan[3], phan[0], phan[1])
+    url = p if "://" in p else "http://" + p
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        os.environ[k] = url
+    log("🌐 Proxy: %s" % re.sub(r"//[^@]*@", "//***@", url), "INFO", "bridge")
+    return url
+
+
+def ap_token_mode() -> str:
+    """Cài đặt › Nâng cao › System Mode: bộ mint ưu tiên sidecar (không cần tiện ích Chrome).
+    mint_tien_ich đọc CAPCUT_MINT_PRIMARY mỗi lần chọn đường đúc nên đổi là có hiệu lực ngay."""
+    che = "sidecar" if cau_hinh().get("token_system") else "ext"
+    os.environ["CAPCUT_MINT_PRIMARY"] = che
+    os.environ["CAPCUT_IMAGE_MINT_PRIMARY"] = che
+    return che
+
+
+def don_tien_trinh() -> list[str]:
+    """Kill All Processes: Chrome hồ sơ PBMedia (browser_1..4), Chrome/Node của bộ mint, realesrgan.
+    Chỉ đụng tiến trình do app tạo — không động Chrome thường của người dùng."""
+    ra = []
+    if os.name != "nt":
+        return ["Chỉ hỗ trợ Windows"]
+    dong = os.path.join(os.path.dirname(os.path.abspath(__file__)), "close_chrome_profile.py")
+    for i in range(1, 5):
+        try:
+            r = subprocess.run([sys.executable, dong, str(i)], capture_output=True, text=True, timeout=30,
+                               creationflags=_KHONG_CUA_SO)
+            if r.stdout.strip():
+                ra.append("browser_%d: %s" % (i, r.stdout.strip()[:120]))
+        except Exception as e:
+            ra.append("browser_%d: %s" % (i, e))
+    ps = ("Get-CimInstance Win32_Process | Where-Object { "
+          "($_.Name -eq 'node.exe' -and $_.CommandLine -match 'mint_sidecar|recaptcha_mint|cookie_capture') -or "
+          "($_.Name -eq 'chrome.exe' -and $_.CommandLine -match 'puppeteer|pb_mint|PBMedia') -or "
+          "($_.Name -like 'realesrgan*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.Name }")
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                           timeout=60, creationflags=_KHONG_CUA_SO)
+        ten = [x.strip() for x in (r.stdout or "").splitlines() if x.strip()]
+        ra.append("Đã dừng %d tiến trình mint/realesrgan" % len(ten))
+    except Exception as e:
+        ra.append("PowerShell lỗi: %s" % e)
+    log("🧹 Kill All Processes: %s" % " · ".join(ra), "INFO", "bridge")
+    return ra
+
+
+def ban_quyen(d: dict) -> dict:
+    """Bản quyền của tool cũ (license_manager) — cùng mã kích hoạt, cùng mã máy."""
+    try:
+        import license_manager
+    except Exception:
+        return {"available": False}
+    if d.get("action") == "activate":
+        ok, msg = license_manager.activate(str(d.get("key") or "").strip())
+        if not ok:
+            raise RuntimeError(msg)
+    st = license_manager.status(hoi_may_chu=bool(d.get("online")))
+    return {"available": True, "ok": bool(st.get("ok")), "msg": st.get("msg") or "",
+            "days": st.get("days"), "name": st.get("name") or "", "machine_id": license_manager.machine_id()}
+
+
+def cap_nhat_ytdlp() -> dict:
+    def viec(v):
+        v["msg"] = "yt-dlp -U…"
+        r = subprocess.run([_exe("yt-dlp"), "-U"], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=600, creationflags=_KHONG_CUA_SO)
+        dong = [x for x in (r.stdout + r.stderr).splitlines() if x.strip()]
+        v["msg"] = (dong[-1] if dong else "Xong")[:200]
+        if r.returncode != 0:
+            raise RuntimeError(v["msg"])
+        return ""
+    return _chay_nen("update-ytdlp", "yt-dlp", "", viec, "bridge")
+
+
+def tien_ich_chrome(bat: bool = False) -> dict:
+    """Máy chủ WebSocket cho tiện ích Chrome (mint_ws, cổng 3458): trạng thái / bật sớm."""
+    try:
+        import mint_tien_ich
+    except Exception as e:
+        return {"available": False, "error": str(e)[:200]}
+    if bat:
+        mint_tien_ich.khoi_dong_som(lambda m: log(m, "INFO", "bridge"))
+    return {"available": True, "connected": bool(mint_tien_ich.da_noi())}
+
+
+def phien_ban() -> dict:
+    def ver(lenh):
+        try:
+            r = subprocess.run(lenh, capture_output=True, text=True, timeout=20, creationflags=_KHONG_CUA_SO)
+            return (r.stdout or r.stderr).strip().splitlines()[0][:80]
+        except Exception:
+            return ""
+    try:
+        import mint_tien_ich
+        ext = bool(mint_tien_ich.da_noi())
+    except Exception:
+        ext = None
+    return {"python": sys.version.split()[0], "tool_dir": TOOL_DIR, "tool_ok": os.path.isdir(TOOL_DIR),
+            "out_root": OUT_MAC_DINH, "ffmpeg": ver([shutil.which("ffmpeg") or "ffmpeg", "-version"]) if shutil.which("ffmpeg") else "",
+            "ytdlp": ver([shutil.which("yt-dlp"), "--version"]) if shutil.which("yt-dlp") else "",
+            "extension": ext}
+
+
 # ───────────────────────── tiện ích ─────────────────────────
 
 def chon_thu_muc(goc: str = "") -> str:
@@ -3426,8 +3601,18 @@ class XuLy(BaseHTTPRequestHandler):
             if u.path == "/api/voice/eleven-voices":
                 return self._json(200, {"ok": True, "voices": eleven_ds_giong()})
             if u.path == "/api/config/bridge":
-                cfg = cau_hinh(d.get("set") if isinstance(d.get("set"), dict) else None)
-                che = {k: ((str(v)[:4] + "…") if "key" in k and v else v) for k, v in cfg.items()}
+                moi = d.get("set") if isinstance(d.get("set"), dict) else None
+                cfg = cau_hinh(moi)
+                if moi and "out_root" in moi:
+                    ap_thu_muc_goc()
+                if moi and any(k.startswith("proxy") for k in moi):
+                    ap_proxy()
+                if moi and "token_system" in moi:
+                    log("🔑 Đúc token: %s" % ap_token_mode(), "INFO", "bridge")
+                # Không bao giờ trả khoá thật ra giao diện: key → che, profile Grok → bỏ, proxy → giấu mật khẩu
+                che = {k: ((str(v)[:4] + "…") if "key" in k and v else
+                           _che_proxy(str(v)) if k == "proxies" else v)
+                       for k, v in cfg.items() if k != "grok_profiles"}
                 return self._json(200, {"ok": True, "cfg": che,
                                         "gemini": len(gemini_keys_an_toan()),
                                         "eleven": len(eleven_keys())})
@@ -3456,6 +3641,16 @@ class XuLy(BaseHTTPRequestHandler):
                 if os.path.dirname(os.path.abspath(p)) == os.path.abspath(OUT_INVIDEO) and os.path.isfile(p):
                     os.remove(p)
                 return self._json(200, {"ok": True})
+            if u.path == "/api/util/kill":
+                return self._json(200, {"ok": True, "lines": don_tien_trinh()})
+            if u.path == "/api/license":
+                return self._json(200, {"ok": True, **ban_quyen(d)})
+            if u.path == "/api/util/update-ytdlp":
+                return self._json(200, {"ok": True, **cap_nhat_ytdlp()})
+            if u.path == "/api/ext/status":
+                return self._json(200, {"ok": True, **tien_ich_chrome(bool(d.get("start")))})
+            if u.path == "/api/version":
+                return self._json(200, {"ok": True, **phien_ban()})
             if u.path == "/api/pick-folder":
                 return self._json(200, {"ok": True, "path": chon_thu_muc(d.get("start") or "")})
             if u.path == "/api/open-folder":
@@ -3471,6 +3666,13 @@ class XuLy(BaseHTTPRequestHandler):
 
 
 def main():
+    ap_thu_muc_goc()
+    if "token_system" in cau_hinh():
+        ap_token_mode()
+    try:
+        ap_proxy()
+    except Exception as e:
+        log("⚠ Proxy: %s" % e, "INFO", "bridge")
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), XuLy)
     log("Cầu nối chạy ở http://127.0.0.1:%d — tool: %s" % (PORT, TOOL_DIR))
     if MINT_ABOUT and os.path.isdir(OVERLAY_DIR):
