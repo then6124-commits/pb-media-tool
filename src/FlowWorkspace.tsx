@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { api, baseName, errText, fileUrl, pickFiles, waitJob } from './bridge'
 
 type ToolId = 'pan' | 'text' | 'image' | 'video' | 'scissors' | 'frame'
 type NodeKind = 'text' | 'image' | 'video' | 'frame'
@@ -12,19 +13,33 @@ type FlowNode = {
   title: string
   text?: string
   mediaLabel?: string
+  mediaPath?: string
+  busy?: boolean
+  err?: string
 }
+
+type FlowEdge = { from: number; to: number }
+
+type FlowStateItem = { scene: string; prompt: string; status: string; msg: string; files?: string[]; t: number }
 
 type SavedFlow = {
   id: number
   name: string
   date: string
   nodes: number
+  data?: { nodes: FlowNode[]; edges: FlowEdge[] }
 }
 
 const LS_NAME = 'pb.flow.name'
 const LS_NODES = 'pb.flow.nodes'
 const LS_SAVED = 'pb.flow.saved'
 const LS_STATS = 'pb.flow.stats'
+const LS_EDGES = 'pb.flow.edges'
+const IMG_MODEL = 'Banana 2'
+const VID_MODEL = 'Veo 3.1 Fast'
+const NODE_W: Record<NodeKind, number> = { text: 260, image: 300, video: 300, frame: 340 }
+
+const isVideo = (p?: string) => !!p && /\.(mp4|mov|webm|mkv)$/i.test(p)
 
 const TOOLS: { id: ToolId; label: string; tip: string; tipCls: string }[] = [
   { id: 'pan', label: '↖', tip: 'Pan mode', tipCls: 'tip-pan' },
@@ -51,10 +66,7 @@ function loadJson<T>(key: string, fallback: T): T {
 }
 
 function defaultSaved(): SavedFlow[] {
-  return [
-    { id: 1, name: 'Untitled Workflow v4', date: todayStr(), nodes: 0 },
-    { id: 2, name: 'Untitled Workflow v3', date: todayStr(), nodes: 0 },
-  ]
+  return []
 }
 
 export default function FlowWorkspace() {
@@ -74,9 +86,13 @@ export default function FlowWorkspace() {
     loadJson(LS_STATS, { running: 0, done: 0, errors: 0 }),
   )
   const [logs, setLogs] = useState<string[]>([
-    `[${todayStr()} 22:00] Flow workspace sẵn sàng (mock).`,
-    '[INFO] Chưa có node — dùng toolbar để thêm Text / Image / Video.',
+    `[${todayStr()}] Flow workspace sẵn sàng.`,
+    '[INFO] Thêm node Text / Image / Video · nối cổng + (phải → trái) để dùng text làm prompt, ảnh làm khung đầu video.',
   ])
+  const [edges, setEdges] = useState<FlowEdge[]>(() => loadJson(LS_EDGES, [] as FlowEdge[]))
+  const [connecting, setConnecting] = useState<number | null>(null)
+  const uploadRef = useRef<HTMLInputElement>(null)
+  const uploadFor = useRef<number | null>(null)
   const [results, setResults] = useState<{ id: number; label: string; status: string }[]>([])
   const [history, setHistory] = useState<FlowNode[][]>([])
   const [future, setFuture] = useState<FlowNode[][]>([])
@@ -115,6 +131,14 @@ export default function FlowWorkspace() {
 
   useEffect(() => {
     try {
+      localStorage.setItem(LS_EDGES, JSON.stringify(edges))
+    } catch {
+      /* ignore */
+    }
+  }, [edges])
+
+  useEffect(() => {
+    try {
       localStorage.setItem(LS_STATS, JSON.stringify(stats))
     } catch {
       /* ignore */
@@ -144,9 +168,10 @@ export default function FlowWorkspace() {
   }
 
   const createNew = () => {
-    if (nodes.length && !confirm('Tạo canvas trống? Thay đổi chưa lưu sẽ mất (mock).')) return
+    if (nodes.length && !confirm('Tạo canvas trống? Thay đổi chưa lưu sẽ mất.')) return
     pushHistory(nodes)
     setNodes([])
+    setEdges([])
     setSelectedId(null)
     setName('Untitled Workflow')
     setStats({ running: 0, done: 0, errors: 0 })
@@ -162,6 +187,7 @@ export default function FlowWorkspace() {
       name: `${name} v${saved.length + 1}`,
       date: todayStr(),
       nodes: nodes.length,
+      data: { nodes: nodes.map((n) => ({ ...n, busy: false })), edges },
     }
     setSaved((s) => [entry, ...s].slice(0, 20))
     setAutoSaved(true)
@@ -170,6 +196,12 @@ export default function FlowWorkspace() {
   }
 
   const loadSaved = (s: SavedFlow) => {
+    if (s.data) {
+      pushHistory(nodes)
+      setNodes(s.data.nodes)
+      setEdges(s.data.edges || [])
+      nextId.current = Math.max(0, ...s.data.nodes.map((n) => n.id)) + 1
+    }
     setName(s.name.replace(/ v\d+$/, '') || s.name)
     setAutoSaved(true)
     addLog(`Mở workflow đã lưu · ${s.name}`)
@@ -287,53 +319,161 @@ export default function FlowWorkspace() {
   const delNode = (id: number) => {
     pushHistory(nodes)
     setNodes((list) => list.filter((n) => n.id !== id))
+    setEdges((list) => list.filter((e) => e.from !== id && e.to !== id))
     if (selectedId === id) setSelectedId(null)
     setAutoSaved(false)
     addLog(`Xóa node #${id}`)
   }
 
-  const mockUpload = (id: number, from: 'device' | 'browse') => {
-    setUploadOpen(null)
-    pushHistory(nodes)
-    setNodes((list) =>
-      list.map((n) =>
-        n.id === id
-          ? {
-              ...n,
-              mediaLabel:
-                from === 'device' ? 'video_device_mock.mp4' : 'Browse · clip_sample.mp4',
-            }
-          : n,
-      ),
-    )
+  const patchNode = (id: number, patch: Partial<FlowNode>) =>
+    setNodes((list) => list.map((n) => (n.id === id ? { ...n, ...patch } : n)))
+
+  const setMedia = (id: number, path: string, label: string) => {
+    patchNode(id, { mediaPath: path, mediaLabel: label, err: undefined, busy: false })
     setAutoSaved(false)
-    addLog(`Upload mock (${from}) → node #${id}`)
-    showToast(from === 'device' ? 'Upload from device (mock)' : 'Browse my files (mock)')
   }
 
-  const mockGenerate = (id: number) => {
+  /** Cổng: bấm cổng phải (Out) của node nguồn rồi cổng trái (In) của node đích. */
+  const onPort = (id: number, side: 'in' | 'out') => {
+    if (side === 'out') {
+      setConnecting(connecting === id ? null : id)
+      if (connecting !== id) showToast('Bấm cổng trái (In) của node đích để nối')
+      return
+    }
+    if (connecting == null || connecting === id) {
+      // Bấm cổng In khi không nối → gỡ mọi dây vào node này
+      if (edges.some((e) => e.to === id)) {
+        setEdges((list) => list.filter((e) => e.to !== id))
+        addLog(`Gỡ dây vào node #${id}`)
+      }
+      return
+    }
+    if (!edges.some((e) => e.from === connecting && e.to === id)) {
+      setEdges((list) => [...list, { from: connecting, to: id }])
+      addLog(`Nối #${connecting} → #${id}`)
+    }
+    setConnecting(null)
+    setAutoSaved(false)
+  }
+
+  const inputsOf = (id: number) => edges.filter((e) => e.to === id).map((e) => nodes.find((n) => n.id === e.from)).filter(Boolean) as FlowNode[]
+
+  const uploadDevice = async (id: number, file: File) => {
+    try {
+      const r = await fetch(`/api/upload?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
+      const j = (await r.json()) as { ok?: boolean; path?: string; error?: string }
+      if (!j.ok || !j.path) throw new Error(j.error || 'Upload lỗi')
+      setMedia(id, j.path, file.name)
+      addLog(`Upload ${file.name} → node #${id}`)
+    } catch (e) {
+      showToast(errText(e))
+    }
+  }
+
+  const browseFile = async (id: number, kind: NodeKind) => {
+    setUploadOpen(null)
+    try {
+      const [p] = await pickFiles(kind === 'video' ? 'video' : 'anh', false)
+      if (!p) return
+      const r = await api<{ path: string; name: string }>('/api/mini/import-file', { path: p })
+      setMedia(id, r.path, r.name)
+      addLog(`Chọn file ${r.name} → node #${id}`)
+    } catch (e) {
+      showToast(errText(e))
+    }
+  }
+
+  /** Generate qua Flow (Google) của tool cũ: Banana cho ảnh, Veo 3.1 cho video. */
+  const generate = async (id: number) => {
+    const node = nodes.find((n) => n.id === id)
+    if (!node) return
+    const ins = inputsOf(id)
+    const prompt = [node.text, ...ins.filter((n) => n.kind === 'text').map((n) => n.text)]
+      .map((x) => (x || '').trim())
+      .filter((x) => x && x !== 'Nhập nội dung…')
+      .join('\n')
+      .replace(/\s*\n\s*/g, ' ')
+    const srcImg = ins.find((n) => n.kind === 'image' && n.mediaPath && !isVideo(n.mediaPath))
+    if (!prompt && !srcImg) {
+      showToast('Nhập prompt trên node hoặc nối node Text vào')
+      return
+    }
+    const kind = node.kind === 'image' ? 'anh' : 'veo3'
+    const body =
+      node.kind === 'image'
+        ? { prompts: [prompt], model: IMG_MODEL, ratio: '16:9' }
+        : srcImg
+          ? { mode: 'i2v', model: VID_MODEL, ratio: '16:9', images: [{ path: srcImg.mediaPath, prompt }] }
+          : { prompts: [prompt], model: VID_MODEL, ratio: '16:9', duration: '8s' }
+    const t0 = Date.now() / 1000 - 2
+    patchNode(id, { busy: true, err: undefined })
     setStats((s) => ({ ...s, running: s.running + 1 }))
-    addLog(`Generate AI mock · node #${id}`)
-    showToast('Generate (mock)…')
-    setTimeout(() => {
-      setNodes((list) =>
-        list.map((n) =>
-          n.id === id ? { ...n, mediaLabel: 'AI generated · mock clip' } : n,
-        ),
-      )
-      setStats((s) => ({
-        running: Math.max(0, s.running - 1),
-        done: s.done + 1,
-        errors: s.errors,
-      }))
-      setResults((r) => [
-        { id: Date.now(), label: `Video node #${id}`, status: 'Xong' },
-        ...r,
+    addLog(`Generate ${node.kind} #${id} · ${srcImg ? 'ảnh → video' : prompt.slice(0, 60)}`)
+    const fail = (m: string) => {
+      patchNode(id, { busy: false, err: m })
+      setStats((s) => ({ ...s, running: Math.max(0, s.running - 1), errors: s.errors + 1 }))
+      addLog(`❌ #${id}: ${m}`)
+      showToast(m)
+    }
+    try {
+      await api(`/api/flow/start?kind=${kind}`, body)
+    } catch (e) {
+      fail(errText(e))
+      return
+    }
+    // Hỏi trạng thái Flow tới khi cảnh của node này xong
+    const want = (prompt || 'Bring this image to life').slice(0, 40)
+    for (let i = 0; i < 600; i++) {
+      await new Promise((ok) => window.setTimeout(ok, 2500))
+      let it: FlowStateItem | undefined
+      try {
+        const st = await api<{ items: FlowStateItem[] }>(`/api/flow/state?kind=${kind}`)
+        it = st.items.find((x) => x.t >= t0 && x.prompt.includes(want))
+      } catch {
+        continue
+      }
+      if (!it) continue
+      if (it.status === 'xong' && it.files?.length) {
+        const f = it.files[0]
+        setMedia(id, f, baseName(f))
+        setStats((s) => ({ ...s, running: Math.max(0, s.running - 1), done: s.done + 1 }))
+        setResults((r) => [{ id: Date.now(), label: `${node.title} #${id} · ${baseName(f)}`, status: 'Xong' }, ...r])
+        addLog(`✅ #${id} → ${f}`)
+        return
+      }
+      if (it.status === 'loi') {
+        fail(it.msg || 'Flow lỗi')
+        return
+      }
+    }
+    fail('Quá thời gian chờ Flow')
+  }
+
+  /** Kéo (scissors): cắt đoạn video của node đang chọn → node video mới. */
+  const trimSelected = async () => {
+    const node = nodes.find((n) => n.id === selectedId)
+    if (!node || node.kind !== 'video' || !node.mediaPath) {
+      showToast('Chọn một node Video đã có video để cắt')
+      return
+    }
+    const raw = window.prompt('Cắt đoạn (giây bắt đầu-kết thúc), ví dụ 1.5-6', '0-5')
+    const m = raw?.match(/^\s*([\d.]+)\s*-\s*([\d.]+)\s*$/)
+    if (!m) return
+    try {
+      const r = await api<{ id: string }>('/api/mini/trim', { path: node.mediaPath, start: Number(m[1]), end: Number(m[2]) })
+      addLog(`✂ Cắt #${node.id} ${m[1]}–${m[2]}s…`)
+      const j = await waitJob(r.id)
+      const nid = nextId.current++
+      setNodes((list) => [
+        ...list,
+        { ...node, id: nid, x: node.x + 40, y: node.y + 330, title: `Cut ${m[1]}–${m[2]}s`, mediaPath: j.out_path, mediaLabel: baseName(j.out_path), busy: false },
       ])
-      addLog(`Generate xong · node #${id}`)
-      showToast('Generate xong (mock)')
-      setAutoSaved(false)
-    }, 1200)
+      setEdges((list) => [...list, { from: node.id, to: nid }])
+      setSelectedId(nid)
+      addLog(`✂ Xong → node #${nid}`)
+    } catch (e) {
+      showToast(errText(e))
+    }
   }
 
   const resetStats = () => {
@@ -344,7 +484,7 @@ export default function FlowWorkspace() {
 
   const exportMock = () => {
     const blob = new Blob(
-      [JSON.stringify({ name, nodes, savedAt: new Date().toISOString() }, null, 2)],
+      [JSON.stringify({ name, nodes, edges, savedAt: new Date().toISOString() }, null, 2)],
       { type: 'application/json' },
     )
     const url = URL.createObjectURL(blob)
@@ -353,7 +493,7 @@ export default function FlowWorkspace() {
     a.download = `${name.replace(/\s+/g, '_') || 'workflow'}.json`
     a.click()
     URL.revokeObjectURL(url)
-    addLog('Export JSON mock')
+    addLog('Export JSON')
     showToast('Đã export JSON')
     setPanel(null)
   }
@@ -365,6 +505,7 @@ export default function FlowWorkspace() {
         const data = JSON.parse(String(reader.result))
         pushHistory(nodes)
         if (typeof data.name === 'string') setName(data.name)
+        if (Array.isArray(data.edges)) setEdges(data.edges)
         if (Array.isArray(data.nodes)) {
           setNodes(data.nodes)
           nextId.current = Math.max(0, ...data.nodes.map((n: FlowNode) => n.id)) + 1
@@ -526,8 +667,8 @@ export default function FlowWorkspace() {
                   onClick={() => {
                     setTool(t.id)
                     if (t.id === 'scissors') {
-                      if (selectedId) delNode(selectedId)
-                      else showToast('Chọn node rồi Cut, hoặc dùng Delete trên node')
+                      setTool('pan')
+                      void trimSelected()
                     }
                   }}
                   onMouseEnter={() => setHoverTool(t.id)}
@@ -622,6 +763,27 @@ export default function FlowWorkspace() {
               className="flow-canvas-inner"
               style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}
             >
+              <svg className="flow-edges" width="4000" height="4000">
+                {edges.map((e) => {
+                  const a = nodes.find((n) => n.id === e.from)
+                  const b = nodes.find((n) => n.id === e.to)
+                  if (!a || !b) return null
+                  const x1 = a.x + NODE_W[a.kind]
+                  const y1 = a.y + 40
+                  const x2 = b.x
+                  const y2 = b.y + 40
+                  const dx = Math.max(40, Math.abs(x2 - x1) / 2)
+                  return (
+                    <path
+                      key={`${e.from}-${e.to}`}
+                      d={`M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`}
+                      stroke="#4b8bf5"
+                      strokeWidth="2"
+                      fill="none"
+                    />
+                  )
+                })}
+              </svg>
               {!nodes.length && (
                 <div className="flow-canvas-hint">
                   Canvas trống — chọn <b>T</b> / Image / Video rồi click để thêm node
@@ -680,53 +842,41 @@ export default function FlowWorkspace() {
                     )}
                     {n.kind === 'image' && (
                       <div className="flow-empty-media">
-                        {n.mediaLabel ? (
-                          <div className="flow-media-ok">🖼 {n.mediaLabel}</div>
+                        {n.mediaPath ? (
+                          <div className="flow-media-ok">
+                            {isVideo(n.mediaPath) ? (
+                              <video className="flow-media-view" src={fileUrl(n.mediaPath)} controls preload="metadata" />
+                            ) : (
+                              <img className="flow-media-view" src={fileUrl(n.mediaPath)} alt="" />
+                            )}
+                            <div className="flow-media-name" title={n.mediaPath}>
+                              🖼 {n.mediaLabel || baseName(n.mediaPath)}
+                              <button type="button" className="flow-linkish" onClick={() => patchNode(n.id, { mediaPath: undefined, mediaLabel: undefined })}>
+                                Gỡ
+                              </button>
+                            </div>
+                          </div>
                         ) : (
                           <>
                             <div className="flow-media-ico">🖼</div>
                             <div className="flow-media-title">Add an image</div>
-                            <div className="flow-media-sub">Upload or generate with AI</div>
-                            <div className="flow-media-acts">
-                              <button
-                                type="button"
-                                className="flow-upload"
-                                onClick={() =>
-                                  setUploadOpen(uploadOpen === n.id ? null : n.id)
-                                }
-                              >
-                                Upload ▾
-                              </button>
-                              <span className="or">or</span>
-                              <button
-                                type="button"
-                                className="flow-gen"
-                                onClick={() => mockGenerate(n.id)}
-                              >
-                                ✦ Generate
-                              </button>
+                            <div className="flow-media-sub">
+                              {n.busy ? '⏳ Đang tạo qua Flow…' : 'Upload, hoặc Generate từ prompt / node nối vào'}
                             </div>
-                          </>
-                        )}
-                      </div>
-                    )}
-                    {n.kind === 'video' && (
-                      <div className="flow-empty-media">
-                        {n.mediaLabel ? (
-                          <div className="flow-media-ok">🎥 {n.mediaLabel}</div>
-                        ) : (
-                          <>
-                            <div className="flow-media-ico vid">🎥</div>
-                            <div className="flow-media-title">Add a video</div>
-                            <div className="flow-media-sub">Upload or generate with AI</div>
+                            <textarea
+                              className="flow-node-prompt"
+                              placeholder="Prompt (tuỳ chọn nếu đã nối node Text)…"
+                              value={n.text || ''}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onChange={(e) => patchNode(n.id, { text: e.target.value })}
+                            />
+                            {n.err && <div className="flow-node-err">❌ {n.err}</div>}
                             <div className="flow-media-acts">
                               <div className="flow-upload-wrap">
                                 <button
                                   type="button"
                                   className="flow-upload"
-                                  onClick={() =>
-                                    setUploadOpen(uploadOpen === n.id ? null : n.id)
-                                  }
+                                  onClick={() => setUploadOpen(uploadOpen === n.id ? null : n.id)}
                                 >
                                   Upload ▾
                                 </button>
@@ -734,14 +884,18 @@ export default function FlowWorkspace() {
                                   <div className="flow-upload-menu">
                                     <button
                                       type="button"
-                                      onClick={() => mockUpload(n.id, 'device')}
+                                      onClick={() => {
+                                        setUploadOpen(null)
+                                        uploadFor.current = n.id
+                                        if (uploadRef.current) {
+                                          uploadRef.current.accept = 'image/*'
+                                          uploadRef.current.click()
+                                        }
+                                      }}
                                     >
                                       <span>⬆</span> Upload from device
                                     </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => mockUpload(n.id, 'browse')}
-                                    >
+                                    <button type="button" onClick={() => void browseFile(n.id, 'image')}>
                                       <span>📁</span> Browse my files
                                     </button>
                                   </div>
@@ -751,9 +905,85 @@ export default function FlowWorkspace() {
                               <button
                                 type="button"
                                 className="flow-gen"
-                                onClick={() => mockGenerate(n.id)}
+                                disabled={n.busy}
+                                onClick={() => void generate(n.id)}
                               >
-                                ✦ Generate
+                                {n.busy ? '⏳' : '✦ Generate'}
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {n.kind === 'video' && (
+                      <div className="flow-empty-media">
+                        {n.mediaPath ? (
+                          <div className="flow-media-ok">
+                            {isVideo(n.mediaPath) ? (
+                              <video className="flow-media-view" src={fileUrl(n.mediaPath)} controls preload="metadata" />
+                            ) : (
+                              <img className="flow-media-view" src={fileUrl(n.mediaPath)} alt="" />
+                            )}
+                            <div className="flow-media-name" title={n.mediaPath}>
+                              🎥 {n.mediaLabel || baseName(n.mediaPath)}
+                              <button type="button" className="flow-linkish" onClick={() => patchNode(n.id, { mediaPath: undefined, mediaLabel: undefined })}>
+                                Gỡ
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flow-media-ico vid">🎥</div>
+                            <div className="flow-media-title">Add a video</div>
+                            <div className="flow-media-sub">
+                              {n.busy ? '⏳ Đang tạo qua Flow…' : 'Upload, hoặc Generate từ prompt / node nối vào'}
+                            </div>
+                            <textarea
+                              className="flow-node-prompt"
+                              placeholder="Prompt (tuỳ chọn nếu đã nối node Text)…"
+                              value={n.text || ''}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onChange={(e) => patchNode(n.id, { text: e.target.value })}
+                            />
+                            {n.err && <div className="flow-node-err">❌ {n.err}</div>}
+                            <div className="flow-media-acts">
+                              <div className="flow-upload-wrap">
+                                <button
+                                  type="button"
+                                  className="flow-upload"
+                                  onClick={() => setUploadOpen(uploadOpen === n.id ? null : n.id)}
+                                >
+                                  Upload ▾
+                                </button>
+                                {uploadOpen === n.id && (
+                                  <div className="flow-upload-menu">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setUploadOpen(null)
+                                        uploadFor.current = n.id
+                                        if (uploadRef.current) {
+                                          uploadRef.current.accept = 'video/*'
+                                          uploadRef.current.click()
+                                        }
+                                      }}
+                                    >
+                                      <span>⬆</span> Upload from device
+                                    </button>
+                                    <button type="button" onClick={() => void browseFile(n.id, 'video')}>
+                                      <span>📁</span> Browse my files
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                              <span className="or">or</span>
+                              <button
+                                type="button"
+                                className="flow-gen"
+                                disabled={n.busy}
+                                onClick={() => void generate(n.id)}
+                              >
+                                {n.busy ? '⏳' : '✦ Generate'}
                               </button>
                             </div>
                           </>
@@ -761,13 +991,31 @@ export default function FlowWorkspace() {
                       </div>
                     )}
                     {n.kind === 'frame' && (
-                      <div className="flow-frame-box">Frame · nhóm node (mock)</div>
+                      <textarea
+                        className="flow-frame-box"
+                        value={n.text || ''}
+                        placeholder="Frame · ghi chú cho nhóm node"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onChange={(e) => patchNode(n.id, { text: e.target.value })}
+                      />
                     )}
                   </div>
-                  <button type="button" className="flow-port left" title="In">
+                  <button
+                    type="button"
+                    className={`flow-port left ${connecting != null && connecting !== n.id ? 'target' : ''}`}
+                    title="In — bấm để nhận dây (bấm khi không nối = gỡ dây vào)"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => onPort(n.id, 'in')}
+                  >
                     +
                   </button>
-                  <button type="button" className="flow-port right" title="Out">
+                  <button
+                    type="button"
+                    className={`flow-port right ${connecting === n.id ? 'on' : ''}`}
+                    title="Out — bấm rồi chọn cổng In của node đích"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => onPort(n.id, 'out')}
+                  >
                     +
                   </button>
                 </div>
@@ -823,7 +1071,7 @@ export default function FlowWorkspace() {
                 </button>
               </div>
               <div className="flow-panel-body">
-                <p className="flow-ie-note">Mock · JSON workflow (không nối backend)</p>
+                <p className="flow-ie-note">JSON workflow: node + dây nối + đường dẫn media</p>
                 <button type="button" className="flow-big-btn" onClick={exportMock}>
                   <span className="flow-big-ico">⬇</span>
                   <span>
@@ -853,6 +1101,17 @@ export default function FlowWorkspace() {
           Đang chọn: <b>{selected.title}</b> #{selected.id} · kéo để di chuyển (Pan) · Duplicate / Delete trên node
         </div>
       )}
+
+      <input
+        ref={uploadRef}
+        type="file"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f && uploadFor.current != null) void uploadDevice(uploadFor.current, f)
+          e.target.value = ''
+        }}
+      />
 
       <input
         ref={fileRef}

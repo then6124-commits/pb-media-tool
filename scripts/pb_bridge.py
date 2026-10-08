@@ -1540,6 +1540,34 @@ def mini_kich_ban_prompt(d: dict) -> dict:
     return {"bible": str(data.get("bible") or ""), "scenes": list(data.get("scenes") or [])}
 
 
+def nhap_file(path: str) -> dict:
+    """Chép file người dùng chọn vào kho upload của cầu nối (để /api/file phát được)."""
+    if not os.path.isfile(path):
+        raise RuntimeError("Không thấy file: %s" % path)
+    thu = os.path.join(REF_DIR, "upload", uuid.uuid4().hex[:8])
+    os.makedirs(thu, exist_ok=True)
+    dich = os.path.join(thu, os.path.basename(path))
+    shutil.copy2(path, dich)
+    return {"path": dich, "name": os.path.basename(path)}
+
+
+def mini_cat_doan(path: str, start: float, end: float) -> dict:
+    """Cắt một đoạn [start, end] giây của video → file mới cạnh file gốc."""
+    if not os.path.isfile(path):
+        raise RuntimeError("Không thấy video: %s" % path)
+    if end <= start:
+        raise RuntimeError("Giây kết thúc phải lớn hơn giây bắt đầu")
+    goc, duoi = os.path.splitext(path)
+    ra = "%s_cut_%g-%g%s" % (goc, start, end, duoi or ".mp4")
+
+    def viec(v):
+        subprocess.run([_exe("ffmpeg"), "-y", "-v", "error", "-ss", "%.3f" % start, "-i", path,
+                        "-t", "%.3f" % (end - start), "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+                        "-c:a", "aac", ra], check=True, creationflags=_KHONG_CUA_SO)
+        return ra
+    return _chay_nen("mini-trim", path, os.path.dirname(path), viec)
+
+
 def doc_chu(path: str) -> str:
     """Đọc file chữ người dùng vừa chọn (txt/srt/vtt/ass) — tối đa 5 MB."""
     if not (os.path.isfile(path) and path.lower().endswith((".txt", ".srt", ".vtt", ".ass"))):
@@ -2788,7 +2816,8 @@ class XuLy(BaseHTTPRequestHandler):
                         cho_phep.update(v.get("files") or [])
                         if v["status"] == "xong":
                             cho_phep.update(FLOW._file_canh(v["out_dir"], v["scene"], v["kind"]))
-                trong_out = os.path.abspath(p).startswith(os.path.abspath(OUT_MAC_DINH) + os.sep)
+                trong_out = any(os.path.abspath(p).startswith(os.path.abspath(g) + os.sep)
+                                for g in (OUT_MAC_DINH, os.path.join(REF_DIR, "upload")))
                 if (p not in cho_phep and not trong_out) or not os.path.isfile(p):
                     return self._json(404, {"ok": False})
                 with open(p, "rb") as f:
@@ -2903,6 +2932,11 @@ class XuLy(BaseHTTPRequestHandler):
             if u.path == "/api/mini/list-images":
                 return self._json(200, {"ok": True, "items": [{"path": x} for x in _ds_file(
                     [str(d.get("folder") or "")], DUOI_ANH)]})
+            if u.path == "/api/mini/import-file":
+                return self._json(200, {"ok": True, **nhap_file(str(d.get("path") or ""))})
+            if u.path == "/api/mini/trim":
+                return self._json(200, {"ok": True, **mini_cat_doan(
+                    str(d.get("path") or ""), float(d.get("start") or 0), float(d.get("end") or 0))})
             if u.path == "/api/mini/read-text":
                 return self._json(200, {"ok": True, "text": doc_chu(str(d.get("path") or ""))})
             if u.path == "/api/mini/cut-img":
