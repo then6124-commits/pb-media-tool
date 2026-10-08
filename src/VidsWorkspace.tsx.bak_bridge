@@ -1,0 +1,986 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+
+type ProjKind = 'video' | 'nano'
+type Aspect = '16:9' | '9:16'
+type RowStatus = 'cho' | 'dang_chay' | 'xong' | 'loi'
+type QueueTab = 'all' | 'done' | 'error'
+type LogLevel = 'INFO' | 'DEBUG' | 'LỖI' | 'WARN'
+
+type Project = {
+  id: number
+  name: string
+  kind: ProjKind
+  aspect: Aspect
+  savePath: string
+  googleDocId: string
+  parallel: number
+}
+
+type RefImage = { id: number; name: string; tag: string }
+
+type QueueRow = {
+  id: number
+  prompt: string
+  aspect: Aspect
+  duration: string
+  status: RowStatus
+  error?: string
+}
+
+type LogLine = {
+  id: number
+  time: string
+  level: LogLevel
+  tag: string
+  msg: string
+}
+
+type Props = {
+  onOpenSettings?: () => void
+}
+
+const LS_PROJECTS = 'pb.vids.projects'
+const LS_ACTIVE = 'pb.vids.active'
+const LS_ROWS = 'pb.vids.rows'
+const LS_PROMPT = 'pb.vids.prompt'
+const LS_ASPECT = 'pb.vids.aspect'
+const LS_PARALLEL = 'pb.vids.parallel'
+const LS_DOC = 'pb.vids.doc'
+const LS_PATH = 'pb.vids.path'
+const LS_COLLAPSED = 'pb.vids.promptCollapsed'
+
+const DEMO_PROMPTS = [
+  'A colossal Marian procession moving steadily through an ancient stone plaza at golden hour, incense smoke drifting, cinematic wide shot.',
+  'Close-up of ornate banners and candles in soft bokeh, gentle camera push-in, warm film grain.',
+  'Aerial tracking over a dense crowd of pilgrims in white robes, dusk light, documentary style.',
+  'Night vigil scene with lanterns reflecting on wet cobblestones, slow dolly, reverent mood.',
+]
+
+const COOKIE_ERR =
+  'Cookie Google đã hết hạn hoặc sai tài khoản — đăng nhập lại trong Cài đặt.'
+
+function nowTime() {
+  const d = new Date()
+  return d.toLocaleTimeString('vi-VN', { hour12: false })
+}
+
+function defaultProjects(): Project[] {
+  return [
+    {
+      id: 1,
+      name: 'bao',
+      kind: 'video',
+      aspect: '16:9',
+      savePath: 'New folder (26)/New folder',
+      googleDocId: '1fGdrx2HLinRo_-',
+      parallel: 8,
+    },
+  ]
+}
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw) return JSON.parse(raw) as T
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+function defaultRows(): QueueRow[] {
+  return DEMO_PROMPTS.map((p, i) => ({
+    id: i + 1,
+    prompt: p,
+    aspect: '16:9' as Aspect,
+    duration: i % 2 === 0 ? '10s' : '30s',
+    status: 'loi' as RowStatus,
+    error: COOKIE_ERR,
+  }))
+}
+
+function seedLogs(): LogLine[] {
+  const lines: Array<Omit<LogLine, 'id'>> = [
+    { time: '11:39:08', level: 'LỖI', tag: 'runner', msg: 'Không lấy được cookie: No cookies configured' },
+    { time: '11:39:55', level: 'DEBUG', tag: 'cookie', msg: 'Cookie Google: 18 mục (mock — không đọc cookie thật).' },
+    { time: '11:39:55', level: 'INFO', tag: 'runner', msg: 'Bắt đầu loạt: 4 prompt, 8 chạy song song.' },
+    { time: '11:39:55', level: 'DEBUG', tag: 'auth', msg: 'Đã có header xác thực (mock).' },
+    { time: '11:39:57', level: 'LỖI', tag: 'auth', msg: 'Kiểm tra phiên thất bại: HTTP 401 — cookie Google đã hết hạn hoặc sai tài khoản.' },
+    { time: '11:40:01', level: 'LỖI', tag: 'runner', msg: 'Prompt #01 thất bại — dừng sớm do auth.' },
+    { time: '11:40:01', level: 'LỖI', tag: 'runner', msg: 'Prompt #02 thất bại — dừng sớm do auth.' },
+    { time: '11:40:02', level: 'WARN', tag: 'runner', msg: 'Huỷ các luồng còn lại (mock).' },
+    { time: '11:41:12', level: 'INFO', tag: 'runner', msg: 'Người dùng mở nhật ký hoạt động.' },
+    { time: '11:42:00', level: 'DEBUG', tag: 'cookie', msg: 'Gợi ý: vào Cài đặt → Cấu hình API để dán cookie mock.' },
+    { time: '11:45:20', level: 'INFO', tag: 'runner', msg: 'Tải lại hàng đợi: 4 dòng lỗi.' },
+    { time: '11:46:01', level: 'DEBUG', tag: 'auth', msg: 'Bỏ qua mint bearer (UI mock — không gọi API thật).' },
+    { time: '11:47:33', level: 'INFO', tag: 'runner', msg: 'Thử lại lỗi: 4 prompt.' },
+    { time: '11:47:35', level: 'LỖI', tag: 'auth', msg: 'HTTP 401 — cookie Google đã hết hạn hoặc sai tài khoản.' },
+    { time: '11:48:05', level: 'INFO', tag: 'runner', msg: 'Đã xoá 0 dòng khỏi danh sách (mock).' },
+  ]
+  return lines.map((l, i) => ({ ...l, id: i + 1 }))
+}
+
+const PROMPT_PLACEHOLDER = `Mỗi dòng = 1 prompt. Dùng @tên để gắn ảnh tham chiếu.
+
+Hoặc dán JSON:
+[
+  {"shot": "Medium shot", "subject": {"description": "A young woman walking"}}
+]`
+
+export default function VidsWorkspace({ onOpenSettings }: Props) {
+  const [projects, setProjects] = useState<Project[]>(() =>
+    loadJson(LS_PROJECTS, defaultProjects()),
+  )
+  const [activeId, setActiveId] = useState<number>(() => {
+    const v = loadJson<number | null>(LS_ACTIVE, null)
+    return v ?? defaultProjects()[0].id
+  })
+  const [rows, setRows] = useState<QueueRow[]>(() => loadJson(LS_ROWS, defaultRows()))
+  const [promptText, setPromptText] = useState(() => {
+    try {
+      return localStorage.getItem(LS_PROMPT) || ''
+    } catch {
+      return ''
+    }
+  })
+  const [aspect, setAspect] = useState<Aspect>(() => loadJson(LS_ASPECT, '16:9'))
+  const [parallel, setParallel] = useState(() => loadJson(LS_PARALLEL, 8))
+  const [docId, setDocId] = useState(() => {
+    try {
+      return localStorage.getItem(LS_DOC) || '1fGdrx2HLinRo_-'
+    } catch {
+      return '1fGdrx2HLinRo_-'
+    }
+  })
+  const [savePath, setSavePath] = useState(() => {
+    try {
+      return localStorage.getItem(LS_PATH) || 'New folder (26)/New folder'
+    } catch {
+      return 'New folder (26)/New folder'
+    }
+  })
+  const [refs, setRefs] = useState<RefImage[]>([])
+  const [queueTab, setQueueTab] = useState<QueueTab>('all')
+  const [search, setSearch] = useState('')
+  const [collapsed, setCollapsed] = useState(() => loadJson(LS_COLLAPSED, false))
+  const [sideCollapsed, setSideCollapsed] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newKind, setNewKind] = useState<ProjKind>('video')
+  const [showParallelMenu, setShowParallelMenu] = useState(false)
+  const [showLog, setShowLog] = useState(false)
+  const [logs, setLogs] = useState<LogLine[]>(() => seedLogs())
+  const [toast, setToast] = useState<string | null>(null)
+  const [selected, setSelected] = useState<number[]>([])
+  const fileRef = useRef<HTMLInputElement>(null)
+  const imgRef = useRef<HTMLInputElement>(null)
+  const nextId = useRef(100)
+
+  const active = projects.find((p) => p.id === activeId) || projects[0]
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_PROJECTS, JSON.stringify(projects))
+      localStorage.setItem(LS_ACTIVE, JSON.stringify(activeId))
+      localStorage.setItem(LS_ROWS, JSON.stringify(rows))
+      localStorage.setItem(LS_PROMPT, promptText)
+      localStorage.setItem(LS_ASPECT, JSON.stringify(aspect))
+      localStorage.setItem(LS_PARALLEL, JSON.stringify(parallel))
+      localStorage.setItem(LS_DOC, docId)
+      localStorage.setItem(LS_PATH, savePath)
+      localStorage.setItem(LS_COLLAPSED, JSON.stringify(collapsed))
+    } catch {
+      /* ignore */
+    }
+  }, [projects, activeId, rows, promptText, aspect, parallel, docId, savePath, collapsed])
+
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 2200)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  const pushLog = (level: LogLevel, tag: string, msg: string) => {
+    setLogs((prev) => {
+      const line: LogLine = {
+        id: Date.now() + Math.random(),
+        time: nowTime(),
+        level,
+        tag,
+        msg,
+      }
+      return [line, ...prev].slice(0, 80)
+    })
+  }
+
+  const counts = useMemo(() => {
+    const done = rows.filter((r) => r.status === 'xong').length
+    const err = rows.filter((r) => r.status === 'loi').length
+    return { all: rows.length, done, err }
+  }, [rows])
+
+  const logErrCount = useMemo(
+    () => logs.filter((l) => l.level === 'LỖI').length,
+    [logs],
+  )
+
+  const filteredRows = useMemo(() => {
+    let list = rows
+    if (queueTab === 'done') list = list.filter((r) => r.status === 'xong')
+    if (queueTab === 'error') list = list.filter((r) => r.status === 'loi')
+    const q = search.trim().toLowerCase()
+    if (q) list = list.filter((r) => r.prompt.toLowerCase().includes(q))
+    return list
+  }, [rows, queueTab, search])
+
+  const promptCount = useMemo(() => {
+    const lines = promptText
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+    if (!lines.length) return 0
+    const joined = promptText.trim()
+    if (joined.startsWith('[') || joined.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(joined)
+        if (Array.isArray(parsed)) return parsed.length
+        return 1
+      } catch {
+        /* fallthrough */
+      }
+    }
+    return lines.length
+  }, [promptText])
+
+  const flash = (msg: string) => setToast(msg)
+
+  const createProject = () => {
+    const name = newName.trim() || `Dự án ${projects.length + 1}`
+    const id = ++nextId.current
+    const p: Project = {
+      id,
+      name,
+      kind: newKind,
+      aspect: '16:9',
+      savePath,
+      googleDocId: docId,
+      parallel,
+    }
+    setProjects((prev) => [...prev, p])
+    setActiveId(id)
+    setShowCreate(false)
+    setNewName('')
+    setNewKind('video')
+    pushLog('INFO', 'runner', `Tạo dự án «${name}» (${newKind === 'video' ? 'Video' : 'Nano Banana'}).`)
+    flash(`Đã tạo dự án «${name}»`)
+  }
+
+  const pickPath = () => {
+    const mock = `VidsOut/${active?.name || 'project'}_${Date.now().toString().slice(-4)}`
+    setSavePath(mock)
+    flash('Đã chọn thư mục (mock)')
+    pushLog('INFO', 'runner', `Lưu vào: ${mock}`)
+  }
+
+  const loadTxt = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const text = String(reader.result || '')
+      setPromptText((prev) => (prev ? prev + '\n' + text : text))
+      flash(`Đã nạp ${file.name}`)
+      pushLog('INFO', 'runner', `Nạp TXT: ${file.name}`)
+    }
+    reader.readAsText(file)
+  }
+
+  const addRef = (file: File) => {
+    const base = file.name.replace(/\.[^.]+$/, '').replace(/\s+/g, '_') || 'anh'
+    const tag = `@${base}`
+    setRefs((prev) => [...prev, { id: ++nextId.current, name: file.name, tag }])
+    flash(`Đã thêm ${tag}`)
+    pushLog('INFO', 'runner', `Ảnh tham chiếu: ${tag}`)
+  }
+
+  const runPrompts = () => {
+    let items: string[] = []
+    const joined = promptText.trim()
+    if (joined.startsWith('[') || joined.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(joined)
+        if (Array.isArray(parsed)) {
+          items = parsed.map((x) =>
+            typeof x === 'string' ? x : JSON.stringify(x),
+          )
+        } else {
+          items = [JSON.stringify(parsed)]
+        }
+      } catch {
+        items = joined.split('\n').map((l) => l.trim()).filter(Boolean)
+      }
+    } else {
+      items = joined.split('\n').map((l) => l.trim()).filter(Boolean)
+    }
+    if (!items.length) {
+      flash('Chưa có prompt')
+      return
+    }
+    pushLog('INFO', 'runner', `Bắt đầu loạt: ${items.length} prompt, ${parallel} chạy song song.`)
+    pushLog('DEBUG', 'auth', 'Đã có header xác thực (mock).')
+    pushLog(
+      'LỖI',
+      'auth',
+      'Kiểm tra phiên thất bại: HTTP 401 — cookie Google đã hết hạn hoặc sai tài khoản.',
+    )
+    const startId = rows.reduce((m, r) => Math.max(m, r.id), 0) + 1
+    const newRows: QueueRow[] = items.map((p, i) => ({
+      id: startId + i,
+      prompt: p,
+      aspect,
+      duration: aspect === '16:9' ? '10s' : '8s',
+      status: 'loi' as RowStatus,
+      error: COOKIE_ERR,
+    }))
+    setRows((prev) => [...newRows, ...prev])
+    setQueueTab('error')
+    setShowLog(true)
+    flash(`Đã thêm ${items.length} prompt (mock lỗi cookie)`)
+  }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault()
+        runPrompts()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  const retryErrors = () => {
+    const n = rows.filter((r) => r.status === 'loi').length
+    pushLog('INFO', 'runner', `Tạo lại lỗi: ${n} prompt.`)
+    pushLog(
+      'LỖI',
+      'auth',
+      'HTTP 401 — cookie Google đã hết hạn hoặc sai tài khoản.',
+    )
+    setShowLog(true)
+    flash(`Thử lại ${n} lỗi (mock)`)
+  }
+
+  const retryPending = () => {
+    const n = rows.filter((r) => r.status === 'cho' || r.status === 'loi').length
+    pushLog('INFO', 'runner', `Tạo lại tất cả chưa tạo: ${n} prompt.`)
+    pushLog(
+      'LỖI',
+      'auth',
+      'HTTP 401 — cookie Google đã hết hạn hoặc sai tài khoản.',
+    )
+    setRows((prev) =>
+      prev.map((r) =>
+        r.status === 'cho' || r.status === 'loi'
+          ? { ...r, status: 'loi', error: COOKIE_ERR }
+          : r,
+      ),
+    )
+    setShowLog(true)
+    flash(`Tạo lại ${n} chưa tạo (mock)`)
+  }
+
+  const clearAll = () => {
+    const n = rows.length
+    setRows([])
+    setSelected([])
+    pushLog('INFO', 'runner', `Đã xoá ${n} dòng khỏi danh sách.`)
+    flash('Đã xoá toàn bộ')
+  }
+
+  const toggleSelect = (id: number) => {
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }
+
+  const selectAllFiltered = () => {
+    const ids = filteredRows.map((r) => r.id)
+    const allOn = ids.every((id) => selected.includes(id))
+    setSelected(allOn ? selected.filter((id) => !ids.includes(id)) : [
+      ...new Set([...selected, ...ids]),
+    ])
+  }
+
+  return (
+    <div className="vids-root">
+      {!sideCollapsed && (
+        <aside className="vids-side">
+          <div className="vids-brand">
+            <div>
+              <div className="vids-brand-title">Vids</div>
+              <div className="vids-brand-sub">Video Studio</div>
+            </div>
+            <button
+              type="button"
+              className="vids-icon-btn"
+              title="Thu gọn"
+              onClick={() => setSideCollapsed(true)}
+            >
+              ‹
+            </button>
+          </div>
+          <div className="vids-proj-head">
+            <span>DỰ ÁN ({projects.length})</span>
+            <button
+              type="button"
+              className="vids-plus"
+              title="Tạo dự án"
+              onClick={() => setShowCreate(true)}
+            >
+              +
+            </button>
+          </div>
+          <div className="vids-proj-list">
+            {projects.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={`vids-proj ${p.id === activeId ? 'on' : ''}`}
+                onClick={() => setActiveId(p.id)}
+              >
+                <span className="vids-proj-ico">
+                  {p.kind === 'video' ? '🎬' : '🖼️'}
+                </span>
+                <span className="vids-proj-name">{p.name}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
+      )}
+
+      <div className="vids-main">
+        <div className="vids-topbar">
+          {sideCollapsed && (
+            <button
+              type="button"
+              className="vids-icon-btn"
+              onClick={() => setSideCollapsed(false)}
+              title="Mở sidebar"
+            >
+              ›
+            </button>
+          )}
+          <div className="vids-proj-title">
+            <span className="vids-proj-ico">🎬</span>
+            <strong>{active?.name || '—'}</strong>
+          </div>
+          <div className="vids-save">
+            <span className="vids-muted">Lưu vào</span>
+            <input
+              className="vids-path"
+              value={savePath}
+              onChange={(e) => setSavePath(e.target.value)}
+            />
+            <button type="button" className="vids-icon-btn sm" onClick={pickPath} title="Chọn thư mục">
+              📁
+            </button>
+            <button
+              type="button"
+              className="vids-icon-btn sm"
+              title="Làm mới"
+              onClick={() => flash('Đã làm mới đường dẫn (mock)')}
+            >
+              ↻
+            </button>
+          </div>
+          <div className="vids-progress">
+            <span className="vids-progress-dot" />
+            {counts.done}/{counts.all} hoàn thành
+          </div>
+          <button
+            type="button"
+            className="vids-bell"
+            title="Nhật ký hoạt động"
+            onClick={() => setShowLog(true)}
+          >
+            🔔
+            {logErrCount > 0 && <span className="vids-bell-badge">{logErrCount}</span>}
+          </button>
+        </div>
+
+        <div className="vids-cfg">
+          <div className="vids-cfg-item">
+            <label>SỐ PROMPT SONG SONG</label>
+            <div className="vids-parallel-wrap">
+              <button
+                type="button"
+                className="vids-select"
+                onClick={() => setShowParallelMenu((v) => !v)}
+              >
+                {parallel} luồng ▾
+              </button>
+              {showParallelMenu && (
+                <div className="vids-menu">
+                  {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      className={`vids-menu-item ${parallel === n ? 'on' : ''}`}
+                      onClick={() => {
+                        setParallel(n)
+                        setShowParallelMenu(false)
+                      }}
+                    >
+                      {n} {parallel === n && <span className="vids-check">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="vids-cfg-item grow">
+            <label>GOOGLE DOC ID — Bỏ trống nếu dùng mặc định</label>
+            <input
+              className="vids-input"
+              value={docId}
+              onChange={(e) => setDocId(e.target.value)}
+              placeholder="Google Doc ID"
+            />
+          </div>
+        </div>
+
+        {!collapsed && (
+          <section className="vids-prompt-card">
+            <div className="vids-prompt-head">
+              <span className="vids-chip">Video {aspect}</span>
+              <div className="vids-prompt-actions">
+                <button
+                  type="button"
+                  className="vids-ghost"
+                  onClick={() => fileRef.current?.click()}
+                >
+                  Nạp TXT
+                </button>
+                <span className="vids-ghost muted">{promptCount} prompt</span>
+                <button
+                  type="button"
+                  className="vids-ghost"
+                  onClick={() => setCollapsed(true)}
+                >
+                  Thu gọn ▴
+                </button>
+              </div>
+            </div>
+            <textarea
+              className="vids-textarea"
+              value={promptText}
+              onChange={(e) => setPromptText(e.target.value)}
+              placeholder={PROMPT_PLACEHOLDER}
+              rows={7}
+            />
+            <div className="vids-ref-row">
+              <button
+                type="button"
+                className="vids-ref-btn"
+                onClick={() => imgRef.current?.click()}
+              >
+                + Tải ảnh tham chiếu
+              </button>
+              <span className="vids-muted">
+                Tải ảnh lên rồi gõ @tên trong prompt để AI tham chiếu nhân vật/bối cảnh
+              </span>
+            </div>
+            {refs.length > 0 && (
+              <div className="vids-ref-list">
+                {refs.map((r) => (
+                  <span key={r.id} className="vids-ref-tag">
+                    {r.tag}
+                    <button
+                      type="button"
+                      onClick={() => setRefs((prev) => prev.filter((x) => x.id !== r.id))}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="vids-run-row">
+              <div className="vids-aspect">
+                <button
+                  type="button"
+                  className={aspect === '16:9' ? 'on' : ''}
+                  onClick={() => setAspect('16:9')}
+                >
+                  16:9 Ngang
+                </button>
+                <button
+                  type="button"
+                  className={aspect === '9:16' ? 'on' : ''}
+                  onClick={() => setAspect('9:16')}
+                >
+                  9:16 Dọc
+                </button>
+              </div>
+              <div className="vids-parallel-mini">
+                <span>👤</span>
+                <select
+                  value={parallel}
+                  onChange={(e) => setParallel(Number(e.target.value))}
+                >
+                  {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                className="vids-run"
+                onClick={runPrompts}
+                disabled={!promptCount}
+              >
+                ▶ Chạy prompt (ctrl+↵)
+              </button>
+            </div>
+          </section>
+        )}
+        {collapsed && (
+          <button
+            type="button"
+            className="vids-expand-prompt"
+            onClick={() => setCollapsed(false)}
+          >
+            Mở khung prompt ▾ · {promptCount} prompt · Video {aspect}
+          </button>
+        )}
+
+        <section className="vids-queue">
+          <div className="vids-queue-head">
+            <div className="vids-tabs">
+              <button
+                type="button"
+                className={queueTab === 'all' ? 'on' : ''}
+                onClick={() => setQueueTab('all')}
+              >
+                Tất cả ({counts.all})
+              </button>
+              <button
+                type="button"
+                className={queueTab === 'done' ? 'on' : ''}
+                onClick={() => setQueueTab('done')}
+              >
+                Hoàn thành ({counts.done})
+              </button>
+              <button
+                type="button"
+                className={`err ${queueTab === 'error' ? 'on' : ''}`}
+                onClick={() => setQueueTab('error')}
+              >
+                Lỗi ({counts.err})
+              </button>
+            </div>
+            <div className="vids-queue-tools">
+              <input
+                className="vids-search"
+                placeholder="Tìm prompt..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <button type="button" className="vids-ghost" onClick={selectAllFiltered}>
+                STT
+              </button>
+              <button type="button" className="vids-link warn" onClick={retryErrors}>
+                Tạo lại lỗi ({counts.err})
+              </button>
+              <button type="button" className="vids-link info" onClick={retryPending}>
+                Tạo lại tất cả chưa tạo ({counts.all - counts.done})
+              </button>
+              <button type="button" className="vids-link danger" onClick={clearAll}>
+                Xoá toàn bộ
+              </button>
+            </div>
+          </div>
+
+          <div className="vids-table-wrap">
+            <table className="vids-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 36 }}>
+                    <input
+                      type="checkbox"
+                      checked={
+                        filteredRows.length > 0 &&
+                        filteredRows.every((r) => selected.includes(r.id))
+                      }
+                      onChange={selectAllFiltered}
+                    />
+                  </th>
+                  <th style={{ width: 44 }}>#</th>
+                  <th style={{ width: 72 }}>MEDIA</th>
+                  <th>PROMPT</th>
+                  <th style={{ width: 72 }}>LOẠI</th>
+                  <th style={{ width: 88 }}>THỜI GIAN</th>
+                  <th style={{ width: 110 }}>TRẠNG THÁI</th>
+                  <th style={{ width: 110 }}>THAO TÁC</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="vids-empty">
+                      Chưa có mục trong hàng đợi
+                    </td>
+                  </tr>
+                )}
+                {filteredRows.map((r, idx) => (
+                  <tr key={r.id} className={r.status === 'loi' ? 'is-err' : ''}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(r.id)}
+                        onChange={() => toggleSelect(r.id)}
+                      />
+                    </td>
+                    <td className="vids-num">
+                      {String(idx + 1).padStart(2, '0')}
+                    </td>
+                    <td className="vids-media">
+                      {r.status === 'loi' ? (
+                        <span className="vids-warn-tri" title="Lỗi">
+                          ⚠
+                        </span>
+                      ) : r.status === 'xong' ? (
+                        <span className="vids-media-ok">▶</span>
+                      ) : (
+                        <span className="vids-media-wait">…</span>
+                      )}
+                    </td>
+                    <td className="vids-prompt-cell">
+                      <div className="vids-prompt-text">{r.prompt}</div>
+                      {r.status === 'loi' && r.error && (
+                        <div className="vids-err-box">
+                          <div>{r.error}</div>
+                          <button
+                            type="button"
+                            className="vids-cookie-link"
+                            onClick={() => {
+                              pushLog(
+                                'INFO',
+                                'runner',
+                                'Mở Cài đặt để đổi cookie (UI mock).',
+                              )
+                              onOpenSettings?.()
+                            }}
+                          >
+                            Đổi cookie trong Cài đặt
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <span className="vids-type">{r.aspect}</span>
+                    </td>
+                    <td>{r.duration}</td>
+                    <td>
+                      <span className={`vids-status ${r.status}`}>
+                        {r.status === 'loi'
+                          ? 'Lỗi'
+                          : r.status === 'xong'
+                            ? 'Xong'
+                            : r.status === 'dang_chay'
+                              ? 'Đang chạy'
+                              : 'Chờ'}
+                      </span>
+                    </td>
+                    <td className="vids-ops">
+                      <button
+                        type="button"
+                        title="Chạy lại"
+                        onClick={() => {
+                          pushLog('INFO', 'runner', `Thử lại #${r.id}`)
+                          pushLog('LỖI', 'auth', 'HTTP 401 — cookie hết hạn (mock).')
+                          setRows((prev) =>
+                            prev.map((x) =>
+                              x.id === r.id
+                                ? { ...x, status: 'loi', error: COOKIE_ERR }
+                                : x,
+                            ),
+                          )
+                          setShowLog(true)
+                        }}
+                      >
+                        ↻
+                      </button>
+                      <button
+                        type="button"
+                        title="Chép prompt"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(r.prompt).catch(() => {})
+                          flash('Đã chép prompt')
+                        }}
+                      >
+                        📋
+                      </button>
+                      <button
+                        type="button"
+                        title="Sửa"
+                        onClick={() => {
+                          setPromptText(r.prompt)
+                          setCollapsed(false)
+                          flash('Đã đưa prompt lên khung nhập')
+                        }}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        type="button"
+                        title="Xoá"
+                        onClick={() => {
+                          setRows((prev) => prev.filter((x) => x.id !== r.id))
+                          pushLog('INFO', 'runner', `Đã xoá dòng #${r.id}`)
+                        }}
+                      >
+                        🗑
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      {showLog && (
+        <aside className="vids-log">
+          <div className="vids-log-head">
+            <div>
+              <strong>NHẬT KÍ HOẠT ĐỘNG</strong>
+              <span className="vids-muted">
+                {' '}
+                — {logs.length} dòng • {logErrCount} lỗi (mất khi đóng app)
+              </span>
+            </div>
+            <div className="vids-log-actions">
+              <button
+                type="button"
+                className="vids-ghost"
+                onClick={() => {
+                  setLogs([])
+                  flash('Đã xoá nhật ký')
+                }}
+              >
+                Xoá
+              </button>
+              <button
+                type="button"
+                className="vids-icon-btn"
+                onClick={() => setShowLog(false)}
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <div className="vids-log-body">
+            {logs.length === 0 && (
+              <div className="vids-muted" style={{ padding: 12 }}>
+                Chưa có dòng nhật ký
+              </div>
+            )}
+            {logs.map((l) => (
+              <div key={l.id} className={`vids-log-line ${l.level === 'LỖI' ? 'err' : ''}`}>
+                <span className="vids-log-time">{l.time}</span>
+                <span className={`vids-log-lvl ${l.level === 'LỖI' ? 'err' : ''}`}>
+                  {l.level}
+                </span>
+                <span className="vids-log-tag">[{l.tag}]</span>
+                <span className="vids-log-msg">{l.msg}</span>
+              </div>
+            ))}
+          </div>
+        </aside>
+      )}
+
+      {showCreate && (
+        <div className="vids-modal-backdrop" onClick={() => setShowCreate(false)}>
+          <div className="vids-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="vids-modal-title">
+              <span>📁</span> Tạo dự án mới
+            </div>
+            <label className="vids-field-label">Tên dự án</label>
+            <input
+              className="vids-input"
+              placeholder="Ví dụ: Quảng cáo sản phẩm"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') createProject()
+              }}
+            />
+            <label className="vids-field-label" style={{ marginTop: 12 }}>
+              Loại dự án
+            </label>
+            <div className="vids-kind-grid">
+              <button
+                type="button"
+                className={`vids-kind ${newKind === 'video' ? 'on' : ''}`}
+                onClick={() => setNewKind('video')}
+              >
+                <span className="vids-kind-ico">🎬</span>
+                <strong>Video</strong>
+                <span className="vids-muted">16:9 / 9:16</span>
+                {newKind === 'video' && <span className="vids-kind-check">✓</span>}
+              </button>
+              <button
+                type="button"
+                className={`vids-kind ${newKind === 'nano' ? 'on' : ''}`}
+                onClick={() => setNewKind('nano')}
+              >
+                <span className="vids-kind-ico">🖼️</span>
+                <strong>Nano Banana</strong>
+                <span className="vids-muted">Ảnh</span>
+                {newKind === 'nano' && <span className="vids-kind-check">✓</span>}
+              </button>
+            </div>
+            <div className="vids-modal-foot">
+              <button type="button" className="vids-ghost" onClick={() => setShowCreate(false)}>
+                Huỷ
+              </button>
+              <button type="button" className="vids-run" onClick={createProject}>
+                Tạo dự án
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".txt,.md,.json,.srt"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) loadTxt(f)
+          e.target.value = ''
+        }}
+      />
+      <input
+        ref={imgRef}
+        type="file"
+        accept="image/*"
+        hidden
+        multiple
+        onChange={(e) => {
+          const files = e.target.files
+          if (files) Array.from(files).forEach(addRef)
+          e.target.value = ''
+        }}
+      />
+
+      {toast && <div className="vids-toast">{toast}</div>}
+    </div>
+  )
+}

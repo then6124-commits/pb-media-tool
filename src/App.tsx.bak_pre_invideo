@@ -1,0 +1,1470 @@
+import { useEffect, useState } from 'react'
+import './App.css'
+import Veo3Workspace from './Veo3Workspace'
+import GrokWorkspace from './GrokWorkspace'
+import VidsWorkspace from './VidsWorkspace'
+import MuseWorkspace from './MuseWorkspace'
+import FlowWorkspace from './FlowWorkspace'
+
+type TopTab = 'veo3' | 'grok' | 'seedance' | 'vids' | 'muse' | 'flow' | 'invideo' | 'anh' | 'creator' | 'voice' | 'ghep' | 'tube' | 'mini' | 'settings'
+type SettingsPane =
+  | 'user'
+  | 'api'
+  | 'download'
+  | 'image'
+  | 'advanced'
+  | 'version'
+type CropMode = 'pad' | 'crop'
+
+
+
+
+const TOP_TABS: { id: TopTab; label: string; badge?: string; badgeCls?: string }[] = [
+  { id: 'veo3', label: 'Veo3' },
+  { id: 'grok', label: 'Grok' },
+  { id: 'seedance', label: 'Seedance', badge: 'BETA', badgeCls: 'beta' },
+  { id: 'vids', label: 'Vids', badge: 'NEW', badgeCls: 'new' },
+  { id: 'muse', label: 'Muse', badge: 'NEW', badgeCls: 'new' },
+  { id: 'flow', label: 'Flow', badge: 'NEW', badgeCls: 'new' },
+  { id: 'invideo', label: 'InVideo', badge: 'V3', badgeCls: 'v3' },
+  { id: 'anh', label: 'Tạo Ảnh', badge: 'VIP', badgeCls: 'vip' },
+  { id: 'creator', label: 'Creator' },
+  { id: 'voice', label: 'Voice', badge: 'NEW', badgeCls: 'new' },
+  { id: 'ghep', label: 'Ghép Video' },
+  { id: 'tube', label: 'Tube Hunter', badge: 'BETA', badgeCls: 'beta' },
+  { id: 'mini', label: 'MiniApp' },
+  { id: 'settings', label: 'Cài đặt' },
+]
+
+const SETTINGS_NAV: { id: SettingsPane; label: string; icon: string }[] = [
+  { id: 'user', label: 'Thông tin user', icon: '👤' },
+  { id: 'api', label: 'Cấu hình API', icon: '⚙️' },
+  { id: 'download', label: 'Tải xuống', icon: '⬇️' },
+  { id: 'image', label: 'Xử lý ảnh', icon: '✂️' },
+  { id: 'advanced', label: 'Nâng cao', icon: '🧪' },
+  { id: 'version', label: 'Phiên bản', icon: '◎' },
+]
+
+
+function Toggle({
+  on,
+  onChange,
+}: {
+  on: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <button
+      type="button"
+      className={`toggle ${on ? 'on' : ''}`}
+      aria-pressed={on}
+      onClick={() => onChange(!on)}
+    >
+      <span className="toggle-knob" />
+    </button>
+  )
+}
+
+
+type MockField = { label: string; value: string; kind?: 'select' | 'text' | 'check' }
+type MockRow = { id: number; name: string; meta: string; status: string; statusCls: string }
+
+function ModuleWorkspace({
+  title,
+  crumb,
+  note,
+  fields,
+  rows,
+  primaryLabel = 'Bắt đầu',
+  secondaryLabel = 'Làm mới',
+}: {
+  title: string
+  crumb: string
+  note: string
+  fields: MockField[]
+  rows: MockRow[]
+  primaryLabel?: string
+  secondaryLabel?: string
+}) {
+  const [running, setRunning] = useState(false)
+
+  return (
+    <div className="muse-wrap module-wrap">
+      <header className="muse-top">
+        <div className="top-left">
+          <h1>{title}</h1>
+          <span className="crumb">{crumb}</span>
+        </div>
+        <div className="top-right">
+          <span className="pill status online">
+            <i className="dot" />
+            Mock sẵn sàng
+          </span>
+        </div>
+      </header>
+
+      <main className="muse-content">
+        <section className="card controls">
+          <div className="module-note">{note}</div>
+          <div className="toolbar module-fields">
+            {fields.map((f) =>
+              f.kind === 'check' ? (
+                <label key={f.label} className="check">
+                  <input type="checkbox" defaultChecked={f.value === '1'} readOnly />
+                  {f.label}
+                </label>
+              ) : (
+                <div key={f.label} className="tool-group">
+                  <label>{f.label}</label>
+                  {f.kind === 'select' ? (
+                    <select className="select" defaultValue={f.value}>
+                      <option>{f.value}</option>
+                    </select>
+                  ) : (
+                    <input className="input" defaultValue={f.value} readOnly />
+                  )}
+                </div>
+              ),
+            )}
+          </div>
+          <textarea
+            className="prompt"
+            placeholder="Khu vực nhập liệu mock — sẽ nối backend sau…"
+            defaultValue=""
+            readOnly
+          />
+        </section>
+
+        <section className="card table-card">
+          <div className="table-head">
+            <h2>Danh sách mock</h2>
+            <div className="table-meta">
+              <span>{rows.length} mục</span>
+            </div>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: 48 }}>#</th>
+                  <th>Tên</th>
+                  <th>Chi tiết</th>
+                  <th style={{ width: 120 }}>Trạng thái</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id}>
+                    <td>{r.id}</td>
+                    <td>{r.name}</td>
+                    <td className="clip">{r.meta}</td>
+                    <td>
+                      <span className={`tag ${r.statusCls}`}>{r.status}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+
+      <footer className="bottombar">
+        <p className="hint">Placeholder · chưa nối API thật</p>
+        <div className="bottom-actions">
+          <button type="button" className="btn">
+            {secondaryLabel}
+          </button>
+          {!running ? (
+            <button type="button" className="btn primary" onClick={() => setRunning(true)}>
+              {primaryLabel}
+            </button>
+          ) : (
+            <button type="button" className="btn danger" onClick={() => setRunning(false)}>
+              Dừng
+            </button>
+          )}
+        </div>
+      </footer>
+    </div>
+  )
+}
+
+
+function VoiceWorkspace() {
+  return (
+    <ModuleWorkspace
+      title="Voice"
+      crumb="Voice · TTS mock"
+      note="Mock Voice — tạo / ghép giọng (placeholder, chưa nối TTS)."
+      fields={[
+        { label: 'Giọng', value: 'Vi-VN nữ', kind: 'select' },
+        { label: 'Tốc độ', value: '1.0x', kind: 'select' },
+        { label: 'Định dạng', value: 'MP3', kind: 'select' },
+      ]}
+      rows={[
+        { id: 1, name: 'Đoạn thoại 1', meta: '12s · MP3', status: 'Xong', statusCls: 'done' },
+        { id: 2, name: 'Đoạn thoại 2', meta: '8s · MP3', status: 'Chờ', statusCls: '' },
+      ]}
+      primaryLabel="Tạo giọng"
+      secondaryLabel="Nghe thử"
+    />
+  )
+}
+
+function GhepVideoWorkspace() {
+  return (
+    <ModuleWorkspace
+      title="Ghép Video"
+      crumb="Ghép · timeline mock"
+      note="Mock ghép clip — timeline đơn giản (placeholder)."
+      fields={[
+        { label: 'Chế độ', value: 'Nối tuần tự', kind: 'select' },
+        { label: 'Chuyển cảnh', value: 'Cắt thẳng', kind: 'select' },
+        { label: 'Xuất', value: '1080p MP4', kind: 'select' },
+      ]}
+      rows={[
+        { id: 1, name: 'clip_01.mp4', meta: '0:00–0:08', status: 'Sẵn', statusCls: 'done' },
+        { id: 2, name: 'clip_02.mp4', meta: '0:08–0:16', status: 'Sẵn', statusCls: 'done' },
+        { id: 3, name: 'clip_03.mp4', meta: '0:16–0:24', status: 'Thiếu', statusCls: 'err' },
+      ]}
+      primaryLabel="Xuất video"
+      secondaryLabel="Thêm clip"
+    />
+  )
+}
+
+function TaoAnhWorkspace() {
+  return (
+    <ModuleWorkspace
+      title="Tạo Ảnh"
+      crumb="Ảnh · batch mock"
+      note="Mock tạo ảnh — Text to Image (placeholder)."
+      fields={[
+        { label: 'Model', value: 'Image gen', kind: 'select' },
+        { label: 'Tỉ lệ', value: '1:1', kind: 'select' },
+        { label: 'Số ảnh / prompt', value: '2', kind: 'select' },
+        { label: 'Tone màu', value: '0', kind: 'check' },
+      ]}
+      rows={[
+        { id: 1, name: 'Portrait soft light', meta: '1:1 · 2 ảnh', status: 'Xong', statusCls: 'done' },
+        { id: 2, name: 'Product shot', meta: '4:5 · 2 ảnh', status: 'Đang chạy', statusCls: 'run' },
+        { id: 3, name: 'Scene wide', meta: '16:9 · 1 ảnh', status: 'Chờ', statusCls: '' },
+      ]}
+      primaryLabel="Tạo ảnh"
+    />
+  )
+}
+
+function usePref<T>(key: string, initial: T): [T, (v: T | ((p: T) => T)) => void] {
+  const [val, setVal] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key)
+      if (raw == null) return initial
+      return JSON.parse(raw) as T
+    } catch {
+      return initial
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(val))
+    } catch {
+      /* ignore */
+    }
+  }, [key, val])
+  return [val, setVal]
+}
+
+function Flash({ text }: { text: string }) {
+  if (!text) return null
+  return <p className="muted sm ok-flash">{text}</p>
+}
+
+type MockAccount = {
+  id: string
+  mail: string
+  status: string
+  plan: string
+  kind: 'tool' | 'gateway'
+  session: string
+  browser: number
+  active: boolean
+}
+
+type CookieSlot = { browser: number; token: string; label: string }
+
+const DEFAULT_ACCOUNTS: MockAccount[] = [
+  {
+    id: 'a1',
+    mail: 'tool@account.mock',
+    status: 'Đang kích hoạt',
+    plan: 'FREE (50)',
+    kind: 'tool',
+    session: 'mock_sess_a1',
+    browser: 1,
+    active: true,
+  },
+  {
+    id: 'a2',
+    mail: 'ready@account.mock',
+    status: 'Sẵn sàng',
+    plan: 'PRO (180)',
+    kind: 'tool',
+    session: 'mock_sess_a2',
+    browser: 1,
+    active: false,
+  },
+  {
+    id: 'g1',
+    mail: 'gateway@account.mock',
+    status: 'Sẵn sàng',
+    plan: 'GATEWAY',
+    kind: 'gateway',
+    session: 'mock_gw_1',
+    browser: 1,
+    active: true,
+  },
+]
+
+function uid(prefix: string) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+}
+
+function SettingsUser() {
+  const [loggedIn, setLoggedIn] = usePref('pb.settings.user.loggedIn', true)
+  const [email, setEmail] = usePref('pb.settings.user.email', 'user@pbmedia.local')
+  const [daysLeft, setDaysLeft] = usePref('pb.settings.user.daysLeft', 1)
+  const [plan, setPlan] = usePref('pb.settings.user.plan', 'Pro · mock')
+  const [device, setDevice] = usePref('pb.settings.user.device', 'PB-MEDIA-DEMO-001')
+  const [flash, setFlash] = useState('')
+
+  const showFlash = (m: string) => {
+    setFlash(m)
+    window.setTimeout(() => setFlash(''), 1800)
+  }
+
+  return (
+    <div className="settings-panel">
+      <div className="panel-card user-card">
+        <h3>
+          <span className="ico">👤</span> Thông tin tài khoản
+        </h3>
+
+        {loggedIn ? (
+          <>
+            <div className="user-top">
+              <div className="user-email">
+                <span className="user-avatar">👤</span>
+                <input
+                  className="input inline-edit"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  aria-label="Email"
+                />
+              </div>
+              <span className="user-verified">
+                <span className="check-box">✓</span> Đã xác thực
+              </span>
+            </div>
+
+            <div className="info-row">
+              <span className="label">
+                <span className="row-ico">⏱</span> Thời hạn sử dụng
+              </span>
+              <span className={`value ${daysLeft <= 3 ? 'warn-text' : 'accent'} days-edit`}>
+                Còn{' '}
+                <input
+                  className="input tiny-num"
+                  type="number"
+                  min={0}
+                  max={999}
+                  value={daysLeft}
+                  onChange={(e) => setDaysLeft(Math.max(0, Number(e.target.value) || 0))}
+                />{' '}
+                ngày
+              </span>
+            </div>
+
+            {daysLeft <= 3 && (
+              <div className="warn-banner">
+                Tài khoản sắp hết hạn. Vui lòng gia hạn để tiếp tục sử dụng.
+              </div>
+            )}
+
+            <div className="info-row">
+              <span className="label">Gói</span>
+              <input
+                className="input inline-edit right"
+                value={plan}
+                onChange={(e) => setPlan(e.target.value)}
+              />
+            </div>
+            <div className="info-row">
+              <span className="label">Thiết bị</span>
+              <input
+                className="input inline-edit right"
+                value={device}
+                onChange={(e) => setDevice(e.target.value)}
+              />
+            </div>
+
+            <div className="user-actions">
+              <button
+                type="button"
+                className="btn teal sm"
+                onClick={() => showFlash('Đã lưu thông tin (localStorage)')}
+              >
+                💾 Lưu thay đổi
+              </button>
+              <button
+                type="button"
+                className="btn logout"
+                onClick={() => {
+                  setLoggedIn(false)
+                  showFlash('Đã đăng xuất (mock)')
+                }}
+              >
+                ⎋ Đăng xuất
+              </button>
+            </div>
+            <Flash text={flash} />
+          </>
+        ) : (
+          <>
+            <p className="muted sm">Chưa đăng nhập (mock UI).</p>
+            <div className="login-form">
+              <input
+                className="input full"
+                placeholder="Email đăng nhập mock…"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => {
+                  setLoggedIn(true)
+                  if (daysLeft <= 0) setDaysLeft(30)
+                }}
+              >
+                Đăng nhập
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SettingsApi() {
+  const [apiTab, setApiTab] = usePref<'cookie' | 'account'>('pb.settings.api.tab', 'cookie')
+  const [browsers, setBrowsers] = usePref<number[]>('pb.settings.api.browsers', [1, 2, 3, 4])
+  const [browser, setBrowser] = usePref<number>('pb.settings.api.browser', 1)
+  const [useOnlyLabs, setUseOnlyLabs] = usePref('pb.settings.api.useOnlyLabs', false)
+  const [cookies, setCookies] = usePref<CookieSlot[]>('pb.settings.api.cookies', [])
+  const [draftToken, setDraftToken] = useState('')
+  const [showToken, setShowToken] = usePref('pb.settings.api.showToken', false)
+  const [accounts, setAccounts] = usePref<MockAccount[]>('pb.settings.api.accounts', DEFAULT_ACCOUNTS)
+  const [accountPaste, setAccountPaste] = usePref('pb.settings.api.accountPaste', '')
+  const [flash, setFlash] = useState('')
+  const [loginBusy, setLoginBusy] = useState(false)
+
+  const showFlash = (m: string) => {
+    setFlash(m)
+    window.setTimeout(() => setFlash(''), 2000)
+  }
+
+  const activeCookie = cookies.find((c) => c.browser === browser)
+  const gateway = accounts.find((a) => a.kind === 'gateway' && a.active) || accounts.find((a) => a.kind === 'gateway')
+
+  const ensureBrowserSelected = (list: number[], current: number) => {
+    if (list.includes(current)) return current
+    return list[0] ?? 1
+  }
+
+  const addBrowser = () => {
+    const next = (browsers.length ? Math.max(...browsers) : 0) + 1
+    const list = [...browsers, next]
+    setBrowsers(list)
+    setBrowser(next)
+    showFlash(`Đã thêm Browser ${next}`)
+  }
+
+  const removeBrowser = (n: number) => {
+    if (browsers.length <= 1) {
+      showFlash('Cần giữ ít nhất 1 browser')
+      return
+    }
+    const list = browsers.filter((b) => b !== n)
+    setBrowsers(list)
+    setCookies((prev) => prev.filter((c) => c.browser !== n))
+    setBrowser(ensureBrowserSelected(list, browser === n ? list[0] : browser))
+    showFlash(`Đã xoá Browser ${n}`)
+  }
+
+  const saveCookie = () => {
+    const token = draftToken.trim() || activeCookie?.token || ''
+    if (!token) {
+      showFlash('Nhập token/cookie mock trước')
+      return
+    }
+    setCookies((prev) => {
+      const rest = prev.filter((c) => c.browser !== browser)
+      return [...rest, { browser, token, label: `Browser ${browser}` }]
+    })
+    setDraftToken('')
+    showFlash(`Đã lưu cookie mock cho Browser ${browser} (localStorage)`)
+  }
+
+  const clearCookie = () => {
+    setCookies((prev) => prev.filter((c) => c.browser !== browser))
+    setDraftToken('')
+    showFlash(`Đã xoá cookie Browser ${browser}`)
+  }
+
+  const startAutoLogin = () => {
+    const lines = accountPaste
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+    if (!lines.length) {
+      showFlash('Dán email|password (mỗi dòng 1 account)')
+      return
+    }
+    setLoginBusy(true)
+    window.setTimeout(() => {
+      const added: MockAccount[] = []
+      for (const line of lines) {
+        const [mail, pass] = line.split('|').map((s) => s.trim())
+        if (!mail) continue
+        added.push({
+          id: uid('acc'),
+          mail,
+          status: 'Sẵn sàng',
+          plan: pass ? 'PRO (mock)' : 'FREE (mock)',
+          kind: mail.toLowerCase().includes('gateway') ? 'gateway' : 'tool',
+          session: `mock_${Math.random().toString(36).slice(2, 10)}`,
+          browser,
+          active: false,
+        })
+      }
+      if (!added.length) {
+        setLoginBusy(false)
+        showFlash('Không parse được account')
+        return
+      }
+      setAccounts((prev) => [...prev, ...added])
+      setAccountPaste('')
+      setLoginBusy(false)
+      showFlash(`Đã thêm ${added.length} account (mock login)`)
+    }, 700)
+  }
+
+  const activateAccount = (id: string) => {
+    setAccounts((prev) =>
+      prev.map((a) => {
+        if (a.id === id) {
+          return { ...a, active: true, status: a.kind === 'gateway' ? 'Sẵn sàng' : 'Đang kích hoạt', browser }
+        }
+        if (a.kind === prev.find((x) => x.id === id)?.kind) {
+          return { ...a, active: false, status: a.kind === 'tool' && a.status === 'Đang kích hoạt' ? 'Sẵn sàng' : a.status }
+        }
+        return a
+      }),
+    )
+    showFlash('Đã kích hoạt account (mock)')
+  }
+
+  const deleteAccount = (id: string) => {
+    setAccounts((prev) => prev.filter((a) => a.id !== id))
+    showFlash('Đã xoá account')
+  }
+
+  const clearAllAccounts = () => {
+    if (!window.confirm('Xoá tất cả tài khoản mock?')) return
+    setAccounts([])
+    showFlash('Đã xoá tất cả account')
+  }
+
+  const refreshAccounts = () => {
+    setAccounts((prev) =>
+      prev.map((a) => ({
+        ...a,
+        session: `mock_${Math.random().toString(36).slice(2, 10)}`,
+        status: a.active && a.kind === 'tool' ? 'Đang kích hoạt' : 'Sẵn sàng',
+      })),
+    )
+    showFlash('Đã làm mới session (mock)')
+  }
+
+  return (
+    <div className="settings-panel">
+      <div className="panel-head">
+        <h3>
+          <span className="ico">⚙️</span> Cấu hình API
+        </h3>
+        <span className="gateway-pill live">
+          <i className="dot" /> Gateway: {gateway?.mail || '— chưa chọn —'}
+        </span>
+      </div>
+
+      <div className="panel-card">
+        <div className="api-tabs-row">
+          <div className="seg">
+            <button
+              type="button"
+              className={`seg-btn ${apiTab === 'cookie' ? 'on' : ''}`}
+              onClick={() => setApiTab('cookie')}
+            >
+              🍪 Cookie (mock)
+            </button>
+            <button
+              type="button"
+              className={`seg-btn ${apiTab === 'account' ? 'on' : ''}`}
+              onClick={() => setApiTab('account')}
+            >
+              👤 Account
+            </button>
+          </div>
+          <div className="browser-row">
+            <span className="muted sm">Browsers:</span>
+            {browsers.map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={`browser-btn ${browser === n ? 'on' : ''}`}
+                onClick={() => {
+                  setBrowser(n)
+                  setDraftToken('')
+                }}
+                title={`Chọn Browser ${n}`}
+              >
+                {n}
+              </button>
+            ))}
+            <button type="button" className="btn sm teal" onClick={addBrowser} title="Thêm browser">
+              +
+            </button>
+            <button
+              type="button"
+              className="btn sm danger-ghost"
+              onClick={() => removeBrowser(browser)}
+              title="Xoá browser đang chọn"
+            >
+              −
+            </button>
+          </div>
+        </div>
+
+        {apiTab === 'cookie' ? (
+          <>
+            <div className="cookie-box">
+              <div className="cookie-box-head">
+                <span>Session token / Cookie (mock) · Browser {browser}</span>
+                <span className="muted sm">
+                  {activeCookie?.token ? '✓ Đã lưu local' : '⚠ Chưa có'}
+                </span>
+              </div>
+              <div className="cookie-input-row">
+                <input
+                  className="input full"
+                  type={showToken ? 'text' : 'password'}
+                  placeholder="Dán cookie/token mock (chỉ lưu localStorage — không đọc cookie trình duyệt thật)…"
+                  value={draftToken || (showToken ? activeCookie?.token || '' : activeCookie?.token ? '••••••••••••' : '')}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    if (v.includes('•')) return
+                    setDraftToken(v)
+                  }}
+                  onFocus={() => {
+                    if (!draftToken && activeCookie?.token) setDraftToken(activeCookie.token)
+                  }}
+                />
+                <button type="button" className="btn sm" onClick={() => setShowToken(!showToken)}>
+                  {showToken ? 'Ẩn' : '👁'}
+                </button>
+                <button type="button" className="btn teal sm" onClick={saveCookie}>
+                  Add
+                </button>
+                <button type="button" className="btn sm danger-ghost" onClick={clearCookie}>
+                  Xoá
+                </button>
+              </div>
+              {activeCookie?.token && (
+                <p className="muted sm" style={{ marginTop: 8 }}>
+                  Preview: {activeCookie.token.slice(0, 28)}
+                  {activeCookie.token.length > 28 ? '…' : ''} · {activeCookie.token.length} ký tự
+                </p>
+              )}
+            </div>
+
+            <div className="adv-row">
+              <div>
+                <strong>useOnlyLabs</strong>
+                <p className="muted sm">
+                  <span className="blue-dot">🔵</span>
+                  {useOnlyLabs
+                    ? 'Chỉ dùng luồng Labs (mock).'
+                    : 'Luồng thường: cần session đầy đủ (mock).'}
+                </p>
+              </div>
+              <Toggle on={useOnlyLabs} onChange={setUseOnlyLabs} />
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="muted sm block-label">Thêm Account Mới (mock)</p>
+            <textarea
+              className="prompt short"
+              placeholder="email@example.com|password123 (mỗi dòng 1 account — chỉ UI mock, không login thật)"
+              rows={3}
+              value={accountPaste}
+              onChange={(e) => setAccountPaste(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn teal full"
+              disabled={loginBusy}
+              onClick={startAutoLogin}
+            >
+              {loginBusy ? 'Đang login mock…' : '↻ Start Auto Login (mock)'}
+            </button>
+          </>
+        )}
+        <Flash text={flash} />
+      </div>
+
+      <div className="panel-card">
+        <div className="acct-list-head">
+          <h4>{accounts.length} tài khoản (mock)</h4>
+          <div className="acct-actions">
+            <button type="button" className="btn teal sm" onClick={refreshAccounts}>
+              Làm mới
+            </button>
+            <button type="button" className="btn logout sm" onClick={clearAllAccounts}>
+              Xoá tất cả
+            </button>
+          </div>
+        </div>
+
+        <p className="section-tag">TÀI KHOẢN CHẠY TOOL</p>
+        {accounts.filter((a) => a.kind === 'tool').length === 0 && (
+          <p className="muted sm">Chưa có account tool — thêm ở tab Account.</p>
+        )}
+        {accounts
+          .filter((a) => a.kind === 'tool')
+          .map((a) => (
+            <div key={a.id} className={`acct-card ${a.active ? 'active-acct' : ''}`}>
+              <div>
+                <div className="acct-mail">{a.mail}</div>
+                <div className="acct-badges">
+                  <span className={`pill ${a.active ? 'ok' : 'ready'}`}>{a.status}</span>
+                  <span className="pill plan">{a.plan}</span>
+                </div>
+                <div className="acct-meta">
+                  session={a.session.slice(0, 8)}… · Browser {a.browser}
+                </div>
+              </div>
+              <div className="acct-actions">
+                <button type="button" className="btn sm" onClick={() => activateAccount(a.id)}>
+                  {a.active ? 'Đang dùng' : 'Kích hoạt'}
+                </button>
+                <button
+                  type="button"
+                  className="btn sm danger-ghost"
+                  onClick={() => deleteAccount(a.id)}
+                >
+                  🗑
+                </button>
+              </div>
+            </div>
+          ))}
+
+        <p className="section-tag">TÀI KHOẢN GATEWAY</p>
+        {accounts.filter((a) => a.kind === 'gateway').length === 0 && (
+          <p className="muted sm">Chưa có gateway — thêm email có chữ gateway hoặc chọn kind.</p>
+        )}
+        {accounts
+          .filter((a) => a.kind === 'gateway')
+          .map((a) => (
+            <div key={a.id} className={`acct-card gateway ${a.active ? 'active-acct' : ''}`}>
+              <div>
+                <div className="acct-mail">{a.mail}</div>
+                <div className="acct-badges">
+                  <span className="pill gateway">GATEWAY</span>
+                  <span className={`pill ${a.active ? 'ok' : 'ready'}`}>{a.status}</span>
+                </div>
+                <div className="acct-meta">Chỉ mock UI — không đọc cookie máy</div>
+              </div>
+              <div className="acct-actions">
+                <button type="button" className="btn sm" onClick={() => activateAccount(a.id)}>
+                  {a.active ? 'Đang dùng' : 'Chọn'}
+                </button>
+                <button
+                  type="button"
+                  className="btn sm danger-ghost"
+                  onClick={() => deleteAccount(a.id)}
+                >
+                  🗑
+                </button>
+              </div>
+            </div>
+          ))}
+      </div>
+    </div>
+  )
+}
+
+function mockDownloadName(prefixOn: boolean, prefix: string, overwrite: boolean, index: number) {
+  const base = prefixOn && prefix.trim() ? prefix.trim() : 'video'
+  if (overwrite) return `${base}_${index}.mp4`
+  // collide simulation: index 1 already exists → (2)
+  if (index === 1) return `${base}_1(2).mp4`
+  return `${base}_${index}.mp4`
+}
+
+function SettingsDownload() {
+  const [autoDl, setAutoDl] = usePref('pb.settings.dl.auto', true)
+  const [prefixOn, setPrefixOn] = usePref('pb.settings.dl.prefixOn', true)
+  const [prefix, setPrefix] = usePref('pb.settings.dl.prefix', 'video')
+  const [overwrite, setOverwrite] = usePref('pb.settings.dl.overwrite', false)
+  const [outPath, setOutPath] = usePref('pb.settings.dl.path', 'K:\\Output\\PB_MEDIA')
+  const [log, setLog] = usePref<string[]>('pb.settings.dl.log', [])
+  const [flash, setFlash] = useState('')
+
+  const showFlash = (m: string) => {
+    setFlash(m)
+    window.setTimeout(() => setFlash(''), 1800)
+  }
+
+  const pickFolderMock = () => {
+    const samples = [
+      'K:\\Output\\PB_MEDIA',
+      'K:\\Output\\Veo3',
+      'D:\\Downloads\\PB_MEDIA',
+      'C:\\Users\\Admin\\Videos\\PB_MEDIA',
+    ]
+    const next = samples[(samples.indexOf(outPath) + 1) % samples.length] || samples[0]
+    setOutPath(next)
+    showFlash('Đã chọn thư mục (mock picker)')
+  }
+
+  const runMockDownload = () => {
+    if (!autoDl) {
+      showFlash('Tự động tải đang TẮT — bật để mock tải')
+      return
+    }
+    const name = mockDownloadName(prefixOn, prefix, overwrite, 1)
+    const line = `[mock] -> ${outPath}\\${name}`
+    setLog((prev) => [line, ...prev].slice(0, 8))
+    showFlash(`Mock tải: ${name}`)
+  }
+
+  return (
+    <div className="settings-panel">
+      <div className="panel-card">
+        <h3>
+          <span className="ico">⬇️</span> Cài đặt tải xuống
+        </h3>
+
+        <div className="setting-block">
+          <p className="block-label">Thư mục lưu</p>
+          <div className="path-row">
+            <input
+              className="input full path-input"
+              value={outPath}
+              onChange={(e) => setOutPath(e.target.value)}
+              placeholder="Đường dẫn thư mục…"
+            />
+            <button type="button" className="btn teal" onClick={pickFolderMock}>
+              Chọn
+            </button>
+          </div>
+          <p className="muted sm">Mock path picker — chỉ lưu localStorage, không mở dialog hệ thống.</p>
+        </div>
+
+        <div className="setting-block">
+          <p className="block-label">Tự động tải xuống</p>
+          <label className="check">
+            <input type="checkbox" checked={autoDl} onChange={(e) => setAutoDl(e.target.checked)} />
+            Tự động tải xuống video khi hoàn thành
+          </label>
+          <p className="muted sm">Khi bật, video sẽ tự động được tải xuống sau khi tạo xong</p>
+        </div>
+
+        <div className="setting-block">
+          <p className="block-label">Tên file prefix</p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={prefixOn}
+              onChange={(e) => setPrefixOn(e.target.checked)}
+            />
+            Sử dụng prefix tùy chỉnh
+          </label>
+          <div className="prefix-row">
+            <input
+              className="input"
+              disabled={!prefixOn}
+              value={prefix}
+              onChange={(e) => setPrefix(e.target.value)}
+            />
+            <span className="muted">_1.mp4</span>
+          </div>
+          <p className="muted sm">
+            Ví dụ: &apos;{prefixOn ? prefix || 'video' : 'video'}&apos; →{' '}
+            {mockDownloadName(prefixOn, prefix, overwrite, 1)}
+          </p>
+        </div>
+
+        <div className="setting-block">
+          <p className="block-label">Ghi đè file</p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={overwrite}
+              onChange={(e) => setOverwrite(e.target.checked)}
+            />
+            Ghi đè file khi trùng tên
+          </label>
+          <p className="muted sm">
+            {overwrite
+              ? 'Trùng tên → ghi đè file cũ (video_1.mp4).'
+              : 'Trùng tên → tạo tên mới (video_1(2).mp4, video_1(3).mp4…).'}
+          </p>
+        </div>
+
+        <div className="setting-block">
+          <p className="block-label">Thử hành vi mock</p>
+          <button type="button" className="btn primary" onClick={runMockDownload}>
+            ▶ Mock tải 1 file
+          </button>
+          <Flash text={flash} />
+          {log.length > 0 && (
+            <div className="dl-log">
+              {log.map((l, i) => (
+                <div key={`${l}-${i}`} className="dl-log-line">
+                  {l}
+                </div>
+              ))}
+              <button type="button" className="btn sm" onClick={() => setLog([])}>
+                Xoá log
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SettingsImage() {
+  const [cropOn, setCropOn] = usePref('pb.settings.img.cropOn', false)
+  const [cropMode, setCropMode] = usePref<CropMode>('pb.settings.img.mode', 'pad')
+  const [ratio, setRatio] = usePref<'16:9' | '9:16'>('pb.settings.img.ratio', '16:9')
+
+  const applyMode = (mode: CropMode) => {
+    setCropMode(mode)
+    setCropOn(mode === 'crop')
+  }
+
+  return (
+    <div className="settings-panel">
+      <div className="panel-card">
+        <h3>
+          <span className="ico">✂️</span> Xử lý Ảnh Tham Chiếu
+        </h3>
+        <p className="muted sm">
+          Cấu hình cách xử lý ảnh tham chiếu khi sử dụng tính năng Auto Crop với tỉ lệ khung hình
+          16:9 hoặc 9:16.
+        </p>
+
+        <div className="crop-head">
+          <div>
+            <strong>Sử dụng chế độ cắt ảnh (Crop)</strong>
+            <p className="muted sm">
+              <span className="ok-dot">●</span>{' '}
+              {cropMode === 'pad'
+                ? 'Thêm viền đen để giữ nguyên toàn bộ ảnh'
+                : 'Cắt ảnh để vừa khung — có thể mất nội dung'}
+            </p>
+          </div>
+          <Toggle
+            on={cropOn}
+            onChange={(v) => {
+              setCropOn(v)
+              setCropMode(v ? 'crop' : 'pad')
+            }}
+          />
+        </div>
+
+        <div className="seg" style={{ marginBottom: 12 }}>
+          <button
+            type="button"
+            className={`seg-btn ${ratio === '16:9' ? 'on' : ''}`}
+            onClick={() => setRatio('16:9')}
+          >
+            Preview 16:9
+          </button>
+          <button
+            type="button"
+            className={`seg-btn ${ratio === '9:16' ? 'on' : ''}`}
+            onClick={() => setRatio('9:16')}
+          >
+            Preview 9:16
+          </button>
+        </div>
+
+        <div className="crop-grid">
+          <button
+            type="button"
+            className={`crop-card ${cropMode === 'pad' ? 'selected' : ''}`}
+            onClick={() => applyMode('pad')}
+          >
+            <strong className={cropMode === 'pad' ? 'accent-title' : ''}>
+              ▦ Chế độ Pad (Mặc định)
+            </strong>
+            <ul>
+              <li className="ok">Giữ nguyên toàn bộ ảnh</li>
+              <li className="ok">Thêm viền đen để đủ tỉ lệ</li>
+              <li className="ok">Không mất nội dung</li>
+            </ul>
+            <div className={`crop-preview pad ratio-${ratio === '16:9' ? 'land' : 'port'}`}>
+              <span className="img-box">Ảnh</span>
+            </div>
+          </button>
+          <button
+            type="button"
+            className={`crop-card ${cropMode === 'crop' ? 'selected' : ''}`}
+            onClick={() => applyMode('crop')}
+          >
+            <strong className={cropMode === 'crop' ? 'accent-title' : ''}>✂️ Chế độ Crop</strong>
+            <ul>
+              <li className="warn">Cắt ảnh để vừa khung</li>
+              <li className="warn">Có thể mất phần ảnh</li>
+              <li className="ok">Không có viền đen</li>
+            </ul>
+            <div className={`crop-preview crop ratio-${ratio === '16:9' ? 'land' : 'port'}`}>
+              <span className="img-box fill">Ảnh</span>
+            </div>
+          </button>
+        </div>
+
+        <div className="note-banner">
+          💡 Đang chọn: <strong>{cropMode === 'pad' ? 'Pad' : 'Crop'}</strong> · tỉ lệ preview{' '}
+          {ratio}. Cài đặt lưu localStorage — áp dụng khi bật &apos;Tự động pad/crop ảnh tham
+          chiếu&apos; trong form tạo.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SettingsAdvanced() {
+  const [tokenMode, setTokenMode] = usePref('pb.settings.adv.tokenMode', false)
+  const [proxyOn, setProxyOn] = usePref('pb.settings.adv.proxyOn', false)
+  const [proxyTab, setProxyTab] = usePref<'list' | 'rotate'>('pb.settings.adv.proxyTab', 'list')
+  const [proxies, setProxies] = usePref<string[]>('pb.settings.adv.proxies', [])
+  const [proxyDraft, setProxyDraft] = useState('')
+  const [rotateUrl, setRotateUrl] = usePref('pb.settings.adv.rotateUrl', '')
+  const [rotateOn, setRotateOn] = usePref('pb.settings.adv.rotateOn', false)
+  const [confirmKill, setConfirmKill] = useState(false)
+  const [killed, setKilled] = useState('')
+  const [flash, setFlash] = useState('')
+
+  const showFlash = (m: string) => {
+    setFlash(m)
+    window.setTimeout(() => setFlash(''), 1800)
+  }
+
+  const addProxy = () => {
+    const lines = proxyDraft
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+    if (!lines.length) {
+      showFlash('Nhập proxy host:port…')
+      return
+    }
+    setProxies((prev) => [...prev, ...lines])
+    setProxyDraft('')
+    setProxyOn(true)
+    showFlash(`Đã thêm ${lines.length} proxy`)
+  }
+
+  const removeProxy = (idx: number) => {
+    setProxies((prev) => prev.filter((_, i) => i !== idx))
+  }
+
+  const doKill = () => {
+    setConfirmKill(false)
+    setKilled('Đang dọn processes mock…')
+    window.setTimeout(() => {
+      setKilled('Đã Kill All Processes (mock UI — không đụng process hệ thống).')
+      window.setTimeout(() => setKilled(''), 2500)
+    }, 600)
+  }
+
+  return (
+    <div className="settings-panel">
+      <div className="panel-head">
+        <h3>
+          <span className="ico">🧪</span> Cấu hình nâng cao
+        </h3>
+        <span className="gateway-pill live">
+          <i className="dot" /> {proxyOn ? `Proxy ON · ${proxies.length} mục` : 'Proxy OFF'}
+        </span>
+      </div>
+
+      <div className="panel-card">
+        <h4>Chế độ lấy token (mock)</h4>
+        <p className="muted sm">Tuỳ chọn UI — không bypass / không đọc extension thật.</p>
+        <div className="adv-row">
+          <div>
+            <strong>Ưu tiên System Mode</strong>
+            <p className="muted sm">
+              <span className="blue-dot">🔵</span>
+              {tokenMode ? 'Đang dùng System Mode (mock)' : 'Chế độ mặc định (mock)'}
+            </p>
+          </div>
+          <Toggle on={tokenMode} onChange={setTokenMode} />
+        </div>
+        <div className="info-callout">
+          <strong>ℹ System Mode</strong>
+          <p>Không cần Chrome Extension nhưng có thể chậm hơn. (mô tả UI — chưa nối backend)</p>
+        </div>
+      </div>
+
+      <div className="panel-card">
+        <h4>Cấu hình Proxy</h4>
+        <div className="seg">
+          <button
+            type="button"
+            className={`seg-btn ${proxyTab === 'list' ? 'on' : ''}`}
+            onClick={() => setProxyTab('list')}
+          >
+            📋 Proxy List
+          </button>
+          <button
+            type="button"
+            className={`seg-btn ${proxyTab === 'rotate' ? 'on' : ''}`}
+            onClick={() => setProxyTab('rotate')}
+          >
+            ↻ Proxy Xoay
+          </button>
+        </div>
+        <div className="adv-row">
+          <div>
+            <strong>🌐 Proxy</strong>
+            <p className="muted sm">{proxyOn ? 'Bật' : 'Tắt'}</p>
+          </div>
+          <Toggle on={proxyOn} onChange={setProxyOn} />
+        </div>
+
+        {proxyTab === 'list' ? (
+          <>
+            <textarea
+              className="prompt short"
+              placeholder="host:port hoặc host:port:user:pass (mỗi dòng 1 proxy)"
+              value={proxyDraft}
+              onChange={(e) => setProxyDraft(e.target.value)}
+              rows={3}
+              disabled={!proxyOn}
+            />
+            <div className="acct-actions" style={{ marginTop: 8 }}>
+              <button type="button" className="btn teal sm" disabled={!proxyOn} onClick={addProxy}>
+                + Thêm proxy
+              </button>
+              <button
+                type="button"
+                className="btn sm danger-ghost"
+                disabled={!proxyOn || !proxies.length}
+                onClick={() => {
+                  setProxies([])
+                  showFlash('Đã xoá list proxy')
+                }}
+              >
+                Xoá list
+              </button>
+            </div>
+            {proxies.length > 0 && (
+              <div className="proxy-list">
+                {proxies.map((p, i) => (
+                  <div key={`${p}-${i}`} className="proxy-item">
+                    <code>{p}</code>
+                    <button
+                      type="button"
+                      className="btn sm danger-ghost"
+                      onClick={() => removeProxy(i)}
+                    >
+                      🗑
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="adv-row">
+              <div>
+                <strong>Bật xoay proxy</strong>
+                <p className="muted sm">
+                  {rotateOn ? 'Đang xoay theo URL/API (mock)' : 'Tắt xoay — dùng list tuần tự'}
+                </p>
+              </div>
+              <Toggle
+                on={rotateOn}
+                onChange={(v) => {
+                  setRotateOn(v)
+                  if (v) setProxyOn(true)
+                }}
+              />
+            </div>
+            <input
+              className="input full"
+              placeholder="URL proxy xoay / API endpoint (mock)"
+              value={rotateUrl}
+              onChange={(e) => setRotateUrl(e.target.value)}
+              disabled={!proxyOn}
+            />
+          </>
+        )}
+        <Flash text={flash} />
+      </div>
+
+      <div className="panel-card">
+        <h4>Dọn dẹp Processes</h4>
+        <p className="muted sm">
+          Kill tất cả processes dư thừa do app tạo ra khi generate token. (nút mock — không kill
+          process hệ thống)
+        </p>
+        {!confirmKill ? (
+          <button type="button" className="btn logout full" onClick={() => setConfirmKill(true)}>
+            🗑⚡ Kill All Processes
+          </button>
+        ) : (
+          <div className="confirm-box">
+            <p>
+              Xác nhận Kill All Processes (mock)? Thao tác chỉ hiện thông báo UI — không đụng
+              process máy.
+            </p>
+            <div className="acct-actions">
+              <button type="button" className="btn logout" onClick={doKill}>
+                Xác nhận Kill
+              </button>
+              <button type="button" className="btn sm" onClick={() => setConfirmKill(false)}>
+                Huỷ
+              </button>
+            </div>
+          </div>
+        )}
+        {killed && <p className="muted sm ok-flash">{killed}</p>}
+      </div>
+    </div>
+  )
+}
+
+function SettingsVersion() {
+  const [checking, setChecking] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [lastCheck, setLastCheck] = usePref('pb.settings.ver.lastCheck', '')
+  const [channel, setChannel] = usePref<'stable' | 'beta'>('pb.settings.ver.channel', 'stable')
+
+  const checkUpdate = () => {
+    setChecking(true)
+    setMsg('Đang kiểm tra cập nhật…')
+    window.setTimeout(() => {
+      const now = new Date()
+      const stamp = now.toLocaleString('vi-VN', { hour12: false })
+      setLastCheck(stamp)
+      // Realistic mock: mostly up-to-date, sometimes suggest beta
+      const roll = Math.random()
+      if (channel === 'beta' && roll > 0.45) {
+        setMsg('Có bản beta mới: v0.1.1-beta (mock) — tải khi nối backend.')
+      } else if (roll > 0.85) {
+        setMsg('Có bản mới: v0.1.1 (mock). Bạn đang ở v0.1.0.')
+      } else {
+        setMsg('Đã là bản mới nhất v0.1.0 (mock).')
+      }
+      setChecking(false)
+    }, 1100)
+  }
+
+  return (
+    <div className="settings-panel">
+      <div className="panel-card">
+        <h3>
+          <span className="ico">◎</span> Phiên bản
+        </h3>
+        <div className="info-row">
+          <span className="label">PB MEDIA</span>
+          <span className="value accent">v0.1.0 · mock UI</span>
+        </div>
+        <div className="info-row">
+          <span className="label">Khung</span>
+          <span className="value">Tauri + React + Vite</span>
+        </div>
+        <div className="info-row">
+          <span className="label">Kênh cập nhật</span>
+          <span className="value">
+            <span className="seg compact">
+              <button
+                type="button"
+                className={`seg-btn ${channel === 'stable' ? 'on' : ''}`}
+                onClick={() => setChannel('stable')}
+              >
+                Stable
+              </button>
+              <button
+                type="button"
+                className={`seg-btn ${channel === 'beta' ? 'on' : ''}`}
+                onClick={() => setChannel('beta')}
+              >
+                Beta
+              </button>
+            </span>
+          </span>
+        </div>
+        <div className="info-row">
+          <span className="label">Học layout</span>
+          <span className="value">SuperVeo-style (không copy mã)</span>
+        </div>
+        <div className="info-row">
+          <span className="label">Kiểm tra lần cuối</span>
+          <span className="value">{lastCheck || 'Chưa kiểm tra'}</span>
+        </div>
+        <div className="info-row">
+          <span className="label">Kết quả</span>
+          <span className="value">{msg || '—'}</span>
+        </div>
+        <button type="button" className="btn primary" disabled={checking} onClick={checkUpdate}>
+          {checking ? 'Đang kiểm tra…' : 'Kiểm tra cập nhật'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SettingsView({ pane }: { pane: SettingsPane }) {
+  switch (pane) {
+    case 'user':
+      return <SettingsUser />
+    case 'api':
+      return <SettingsApi />
+    case 'download':
+      return <SettingsDownload />
+    case 'image':
+      return <SettingsImage />
+    case 'advanced':
+      return <SettingsAdvanced />
+    case 'version':
+      return <SettingsVersion />
+  }
+}
+
+
+function PlaceholderWorkspace({ title }: { title: string }) {
+  return (
+    <div className="placeholder-wrap">
+      <div className="placeholder-card">
+        <div className="placeholder-ico">◇</div>
+        <h2>{title}</h2>
+        <p>Mock tab — UI học layout SuperVeo, chưa nối backend.</p>
+      </div>
+    </div>
+  )
+}
+
+export default function App() {
+  const [top, setTop] = useState<TopTab>('veo3')
+  const [settingsPane, setSettingsPane] = useState<SettingsPane>('user')
+
+  return (
+    <div className="shell">
+      <header className="top-nav">
+        <div className="top-nav-left">
+          <button
+            type="button"
+            className="brand-mark"
+            title="Veo3"
+            onClick={() => setTop('veo3')}
+          >
+            <span className="brand-play" aria-hidden />
+          </button>
+          {TOP_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`top-tab ${top === t.id ? 'active' : ''} ${t.id === 'veo3' ? 'tab-veo' : ''} ${t.id === 'grok' ? 'tab-grok' : ''} ${t.id === 'muse' ? 'tab-muse' : ''} ${t.id === 'flow' ? 'tab-flow' : ''}`}
+              onClick={() => setTop(t.id)}
+            >
+              <span>{t.label}</span>
+              {t.badge && <span className={`badge ${t.badgeCls || ''}`}>{t.badge}</span>}
+            </button>
+          ))}
+        </div>
+        <div className="top-nav-right">
+          <span className="ver">v0.1.0</span>
+        </div>
+      </header>
+
+      <div className="body">
+        {top === 'settings' ? (
+          <>
+            <aside className="settings-side">
+              {SETTINGS_NAV.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={`side-item ${settingsPane === s.id ? 'active' : ''}`}
+                  onClick={() => setSettingsPane(s.id)}
+                >
+                  <span className="side-ico">{s.icon}</span>
+                  {s.label}
+                </button>
+              ))}
+            </aside>
+            <div className="settings-main">
+              <div className="settings-subnav">
+                {SETTINGS_NAV.map((s) => (
+                  <button
+                    key={`sub-${s.id}`}
+                    type="button"
+                    className={`settings-subnav-btn ${settingsPane === s.id ? 'on' : ''}`}
+                    onClick={() => setSettingsPane(s.id)}
+                  >
+                    <span>{s.icon}</span> {s.label}
+                  </button>
+                ))}
+              </div>
+              <SettingsView pane={settingsPane} />
+            </div>
+          </>
+        ) : top === 'veo3' ? (
+          <Veo3Workspace />
+        ) : top === 'grok' ? (
+          <GrokWorkspace />
+        ) : top === 'vids' ? (
+          <VidsWorkspace onOpenSettings={() => { setTop('settings'); setSettingsPane('api') }} />
+        ) : top === 'muse' ? (
+          <MuseWorkspace />
+        ) : top === 'flow' ? (
+          <FlowWorkspace />
+        ) : top === 'voice' ? (
+          <VoiceWorkspace />
+        ) : top === 'ghep' ? (
+          <GhepVideoWorkspace />
+        ) : top === 'anh' ? (
+          <TaoAnhWorkspace />
+        ) : (
+          <PlaceholderWorkspace
+            title={TOP_TABS.find((t) => t.id === top)?.label || top}
+          />
+        )}
+      </div>
+    </div>
+  )
+}

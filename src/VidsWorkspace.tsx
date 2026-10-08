@@ -1,0 +1,1081 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+
+type ProjKind = 'video' | 'nano'
+type Aspect = '16:9' | '9:16'
+type RowStatus = 'cho' | 'dang_chay' | 'xong' | 'loi' | 'tu_choi'
+type QueueTab = 'all' | 'done' | 'error'
+type LogLevel = 'INFO' | 'DEBUG' | 'LỖI' | 'WARN'
+
+type Project = {
+  id: number
+  name: string
+  kind: ProjKind
+  aspect: Aspect
+  savePath: string
+  googleDocId: string
+  parallel: number
+}
+
+/** Ảnh đã gửi lên cầu nối — `path` là file thật trên máy. */
+type RefImage = { id: number; name: string; tag: string; path: string }
+
+type QueueRow = {
+  id: string
+  stt: number
+  prompt: string
+  aspect: Aspect
+  duration: string
+  status: RowStatus
+  error?: string
+  buoc?: string
+  outPath?: string
+  tk?: string
+}
+
+type LogLine = {
+  id: number
+  time: string
+  level: LogLevel
+  tag: string
+  msg: string
+}
+
+type Props = {
+  onOpenSettings?: () => void
+}
+
+type BridgeJob = {
+  id: string
+  stt: number
+  prompt: string
+  aspect: Aspect
+  duration: number
+  status: RowStatus
+  error: string
+  buoc: string
+  out_path: string
+  tk: string
+}
+
+const LS_PROJECTS = 'pb.vids.projects'
+const LS_ACTIVE = 'pb.vids.active'
+const LS_PROMPT = 'pb.vids.prompt'
+const LS_ASPECT = 'pb.vids.aspect'
+const LS_PARALLEL = 'pb.vids.parallel'
+const LS_DOC = 'pb.vids.doc.v2'
+const LS_PATH = 'pb.vids.path.v2'
+const LS_COLLAPSED = 'pb.vids.promptCollapsed'
+const LS_REFS = 'pb.vids.refs.v2'
+const LS_DUR = 'pb.vids.duration'
+const LS_RES = 'pb.vids.res'
+
+/** Gọi cầu nối Python (Vite chuyển /api → 127.0.0.1:1431). */
+async function api<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
+  const r = await fetch(
+    path,
+    body === undefined
+      ? undefined
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+  )
+  const j = (await r.json().catch(() => ({}))) as T & { ok?: boolean; error?: string }
+  if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`)
+  return j
+}
+
+function defaultProjects(): Project[] {
+  return [
+    {
+      id: 1,
+      name: 'bao',
+      kind: 'video',
+      aspect: '16:9',
+      savePath: '',
+      googleDocId: '',
+      parallel: 4,
+    },
+  ]
+}
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw) return JSON.parse(raw) as T
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader()
+    fr.onload = () => resolve(String(fr.result || ''))
+    fr.onerror = () => reject(fr.error)
+    fr.readAsDataURL(file)
+  })
+}
+
+const PROMPT_PLACEHOLDER = `Mỗi dòng = 1 prompt. Dùng @tên để gắn ảnh tham chiếu.
+Ví dụ: 001. @CHAR_01 | @BG_02. A woman walks through the market…
+
+Hoặc dán JSON:
+[
+  {"shot": "Medium shot", "subject": {"description": "A young woman walking"}}
+]`
+
+export default function VidsWorkspace({ onOpenSettings }: Props) {
+  const [projects, setProjects] = useState<Project[]>(() =>
+    loadJson(LS_PROJECTS, defaultProjects()),
+  )
+  const [activeId, setActiveId] = useState<number>(() => {
+    const v = loadJson<number | null>(LS_ACTIVE, null)
+    return v ?? defaultProjects()[0].id
+  })
+  const [rows, setRows] = useState<QueueRow[]>([])
+  const [promptText, setPromptText] = useState(() => {
+    try {
+      return localStorage.getItem(LS_PROMPT) || ''
+    } catch {
+      return ''
+    }
+  })
+  const [aspect, setAspect] = useState<Aspect>(() => loadJson(LS_ASPECT, '16:9'))
+  const [parallel, setParallel] = useState(() => loadJson(LS_PARALLEL, 4))
+  const [duration, setDuration] = useState(() => loadJson(LS_DUR, 8))
+  const [resolution, setResolution] = useState<'720p' | '1080p'>(() => loadJson(LS_RES, '1080p'))
+  const [docId, setDocId] = useState(() => {
+    try {
+      return localStorage.getItem(LS_DOC) || ''
+    } catch {
+      return ''
+    }
+  })
+  const [savePath, setSavePath] = useState(() => {
+    try {
+      return localStorage.getItem(LS_PATH) || ''
+    } catch {
+      return ''
+    }
+  })
+  const [refs, setRefs] = useState<RefImage[]>(() => loadJson(LS_REFS, [] as RefImage[]))
+  const [queueTab, setQueueTab] = useState<QueueTab>('all')
+  const [search, setSearch] = useState('')
+  const [collapsed, setCollapsed] = useState(() => loadJson(LS_COLLAPSED, false))
+  const [sideCollapsed, setSideCollapsed] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newKind, setNewKind] = useState<ProjKind>('video')
+  const [showParallelMenu, setShowParallelMenu] = useState(false)
+  const [showLog, setShowLog] = useState(false)
+  const [logs, setLogs] = useState<LogLine[]>([])
+  const [toast, setToast] = useState<string | null>(null)
+  const [selected, setSelected] = useState<string[]>([])
+  const [bridgeOk, setBridgeOk] = useState<boolean | null>(null)
+  const [account, setAccount] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
+  const imgRef = useRef<HTMLInputElement>(null)
+  const nextId = useRef(100)
+  const logSince = useRef(0)
+
+  const active = projects.find((p) => p.id === activeId) || projects[0]
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_PROJECTS, JSON.stringify(projects))
+      localStorage.setItem(LS_ACTIVE, JSON.stringify(activeId))
+      localStorage.setItem(LS_PROMPT, promptText)
+      localStorage.setItem(LS_ASPECT, JSON.stringify(aspect))
+      localStorage.setItem(LS_PARALLEL, JSON.stringify(parallel))
+      localStorage.setItem(LS_DUR, JSON.stringify(duration))
+      localStorage.setItem(LS_RES, JSON.stringify(resolution))
+      localStorage.setItem(LS_DOC, docId)
+      localStorage.setItem(LS_PATH, savePath)
+      localStorage.setItem(LS_COLLAPSED, JSON.stringify(collapsed))
+      localStorage.setItem(LS_REFS, JSON.stringify(refs))
+    } catch {
+      /* ignore */
+    }
+  }, [projects, activeId, promptText, aspect, parallel, duration, resolution, docId, savePath, collapsed, refs])
+
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 2600)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  // ── Đồng bộ với cầu nối: hàng đợi + nhật ký thật, 1,5 giây một lần ──
+  useEffect(() => {
+    let dead = false
+    const tick = async () => {
+      try {
+        const [j, l] = await Promise.all([
+          api<{ jobs: BridgeJob[] }>('/api/vids/jobs'),
+          api<{ logs: LogLine[] }>(`/api/logs?since=${logSince.current}`),
+        ])
+        if (dead) return
+        setBridgeOk(true)
+        setRows(
+          j.jobs.map((x) => ({
+            id: x.id,
+            stt: x.stt,
+            prompt: x.prompt,
+            aspect: x.aspect,
+            duration: `${x.duration}s`,
+            status: x.status,
+            error: x.error,
+            buoc: x.buoc,
+            outPath: x.out_path,
+            tk: x.tk,
+          })),
+        )
+        if (l.logs.length) {
+          logSince.current = l.logs[l.logs.length - 1].id
+          setLogs((prev) => [...l.logs.slice().reverse(), ...prev].slice(0, 800))
+        }
+      } catch {
+        if (!dead) setBridgeOk(false)
+      }
+    }
+    tick()
+    const t = setInterval(tick, 1500)
+    return () => {
+      dead = true
+      clearInterval(t)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!bridgeOk) return
+    api<{ accounts: { email: string; bat: boolean; cookie_ok: boolean; tier: string }[] }>('/api/accounts')
+      .then((r) => {
+        const a = r.accounts.find((x) => x.bat && x.cookie_ok) || r.accounts[0]
+        setAccount(
+          a
+            ? `${a.email}${a.tier ? ' · ' + a.tier : ''}${a.cookie_ok ? '' : ' (cookie hỏng)'}`
+            : 'chưa có tài khoản',
+        )
+      })
+      .catch(() => setAccount(''))
+  }, [bridgeOk])
+
+  const counts = useMemo(() => {
+    const done = rows.filter((r) => r.status === 'xong').length
+    const err = rows.filter((r) => r.status === 'loi' || r.status === 'tu_choi').length
+    return { all: rows.length, done, err }
+  }, [rows])
+
+  const logErrCount = useMemo(
+    () => logs.filter((l) => l.level === 'LỖI').length,
+    [logs],
+  )
+
+  const filteredRows = useMemo(() => {
+    let list = rows
+    if (queueTab === 'done') list = list.filter((r) => r.status === 'xong')
+    if (queueTab === 'error') list = list.filter((r) => r.status === 'loi' || r.status === 'tu_choi')
+    const q = search.trim().toLowerCase()
+    if (q) list = list.filter((r) => r.prompt.toLowerCase().includes(q))
+    return list
+  }, [rows, queueTab, search])
+
+  const parsePrompts = (text: string): string[] => {
+    const joined = text.trim()
+    if (!joined) return []
+    if (joined.startsWith('[') || joined.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(joined)
+        if (Array.isArray(parsed)) {
+          return parsed.map((x) => (typeof x === 'string' ? x : JSON.stringify(x)))
+        }
+        return [JSON.stringify(parsed)]
+      } catch {
+        /* fallthrough */
+      }
+    }
+    return joined.split('\n').map((l) => l.trim()).filter(Boolean)
+  }
+
+  const promptCount = useMemo(() => parsePrompts(promptText).length, [promptText])
+
+  const flash = (msg: string) => setToast(msg)
+
+  const createProject = () => {
+    const name = newName.trim() || `Dự án ${projects.length + 1}`
+    const id = Date.now()
+    const p: Project = {
+      id,
+      name,
+      kind: newKind,
+      aspect: '16:9',
+      savePath,
+      googleDocId: docId,
+      parallel,
+    }
+    setProjects((prev) => [...prev, p])
+    setActiveId(id)
+    setShowCreate(false)
+    setNewName('')
+    setNewKind('video')
+    flash(`Đã tạo dự án «${name}»`)
+  }
+
+  const pickPath = async () => {
+    try {
+      flash('Đang mở hộp chọn thư mục…')
+      const r = await api<{ path: string }>('/api/pick-folder', { start: savePath })
+      if (r.path) {
+        setSavePath(r.path)
+        flash('Đã chọn thư mục')
+      }
+    } catch (e) {
+      flash(`Không mở được hộp chọn thư mục: ${(e as Error).message}`)
+    }
+  }
+
+  const openFolder = () => {
+    if (!savePath) {
+      flash('Chưa chọn thư mục — video vào Videos\\PB_MEDIA\\Vids\\<dự án>')
+      return
+    }
+    api('/api/open-folder', { path: savePath }).catch(() => flash('Không mở được thư mục'))
+  }
+
+  const loadTxt = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const text = String(reader.result || '')
+      setPromptText((prev) => (prev ? prev + '\n' + text : text))
+      flash(`Đã nạp ${file.name}`)
+    }
+    reader.readAsText(file)
+  }
+
+  const addRef = async (file: File) => {
+    try {
+      const data = await readAsDataUrl(file)
+      const r = await api<{ path: string; name: string; tag: string }>('/api/refs/upload', {
+        name: file.name,
+        data,
+      })
+      setRefs((prev) => [
+        ...prev.filter((x) => x.path !== r.path),
+        { id: ++nextId.current, name: r.name, tag: r.tag, path: r.path },
+      ])
+      flash(`Đã thêm ${r.tag}`)
+    } catch (e) {
+      flash(`Không gửi được ảnh ${file.name}: ${(e as Error).message}`)
+    }
+  }
+
+  const runPrompts = async () => {
+    const items = parsePrompts(promptText)
+    if (!items.length) {
+      flash('Chưa có prompt')
+      return
+    }
+    if (bridgeOk === false) {
+      flash('Cầu nối Python chưa chạy — tắt và chạy lại npm run dev')
+      return
+    }
+    try {
+      await api('/api/vids/start', {
+        prompts: items,
+        aspect,
+        resolution,
+        duration,
+        parallel,
+        out_dir: savePath,
+        doc_id: docId,
+        project: active?.name || 'du_an',
+        refs: refs.map((r) => ({ tag: r.tag, path: r.path })),
+      })
+      setQueueTab('all')
+      flash(`Đã gửi ${items.length} prompt`)
+    } catch (e) {
+      flash(`Không gửi được: ${(e as Error).message}`)
+    }
+  }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault()
+        runPrompts()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  const retryIds = async (ids: string[], label: string) => {
+    if (!ids.length) {
+      flash('Không có dòng nào để chạy lại')
+      return
+    }
+    try {
+      const r = await api<{ n: number }>('/api/vids/retry', { ids })
+      flash(`${label}: ${r.n} prompt`)
+    } catch (e) {
+      flash(`Lỗi: ${(e as Error).message}`)
+    }
+  }
+
+  const retryErrors = () =>
+    retryIds(
+      rows.filter((r) => r.status === 'loi' || r.status === 'tu_choi').map((r) => r.id),
+      'Tạo lại lỗi',
+    )
+
+  const retryPending = () =>
+    retryIds(
+      rows.filter((r) => r.status !== 'xong' && r.status !== 'dang_chay').map((r) => r.id),
+      'Tạo lại chưa tạo',
+    )
+
+  const stopAll = () => {
+    api('/api/vids/stop', {})
+      .then(() => flash('Đã dừng — cảnh đang chạy sẽ xong nốt'))
+      .catch(() => {})
+  }
+
+  const deleteRows = (ids?: string[]) => {
+    api('/api/vids/delete', { ids: ids || null }).catch(() => {})
+    setSelected([])
+  }
+
+  const clearAll = () => {
+    deleteRows()
+    flash('Đã xoá các dòng không chạy')
+  }
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }
+
+  const selectAllFiltered = () => {
+    const ids = filteredRows.map((r) => r.id)
+    const allOn = ids.every((id) => selected.includes(id))
+    setSelected(allOn ? selected.filter((id) => !ids.includes(id)) : [
+      ...new Set([...selected, ...ids]),
+    ])
+  }
+
+  const fileUrl = (p: string) => `/api/file?path=${encodeURIComponent(p)}`
+  const upscale = (p: string) =>
+    api('/api/util/upscale', { path: p, scale: 2 })
+      .then(() => flash('Đang upscale x2 — file *_x2.mp4 cạnh video gốc'))
+      .catch((e) => flash(`Không upscale được: ${(e as Error).message}`))
+  const dangChay = rows.some((r) => r.status === 'dang_chay' || r.status === 'cho')
+
+  return (
+    <div className="vids-root">
+      {!sideCollapsed && (
+        <aside className="vids-side">
+          <div className="vids-brand">
+            <div>
+              <div className="vids-brand-title">Vids</div>
+              <div className="vids-brand-sub">Video Studio</div>
+            </div>
+            <button
+              type="button"
+              className="vids-icon-btn"
+              title="Thu gọn"
+              onClick={() => setSideCollapsed(true)}
+            >
+              ‹
+            </button>
+          </div>
+          <div className="vids-proj-head">
+            <span>DỰ ÁN ({projects.length})</span>
+            <button
+              type="button"
+              className="vids-plus"
+              title="Tạo dự án"
+              onClick={() => setShowCreate(true)}
+            >
+              +
+            </button>
+          </div>
+          <div className="vids-proj-list">
+            {projects.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={`vids-proj ${p.id === activeId ? 'on' : ''}`}
+                onClick={() => setActiveId(p.id)}
+              >
+                <span className="vids-proj-ico">
+                  {p.kind === 'video' ? '🎬' : '🖼️'}
+                </span>
+                <span className="vids-proj-name">{p.name}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
+      )}
+
+      <div className="vids-main">
+        <div className="vids-topbar">
+          {sideCollapsed && (
+            <button
+              type="button"
+              className="vids-icon-btn"
+              onClick={() => setSideCollapsed(false)}
+              title="Mở sidebar"
+            >
+              ›
+            </button>
+          )}
+          <div className="vids-proj-title">
+            <span className="vids-proj-ico">🎬</span>
+            <strong>{active?.name || '—'}</strong>
+          </div>
+          <div className="vids-save">
+            <span className="vids-muted">Lưu vào</span>
+            <input
+              className="vids-path"
+              value={savePath}
+              placeholder="Mặc định: Videos\PB_MEDIA\Vids\<dự án>"
+              onChange={(e) => setSavePath(e.target.value)}
+            />
+            <button type="button" className="vids-icon-btn sm" onClick={pickPath} title="Chọn thư mục">
+              📁
+            </button>
+            <button
+              type="button"
+              className="vids-icon-btn sm"
+              title="Mở thư mục lưu"
+              onClick={openFolder}
+            >
+              ↗
+            </button>
+          </div>
+          <div className="vids-progress" title={account || ''}>
+            <span
+              className="vids-progress-dot"
+              style={{ background: bridgeOk === false ? '#f87171' : undefined }}
+            />
+            {bridgeOk === false
+              ? 'Cầu nối Python chưa chạy'
+              : `${counts.done}/${counts.all} hoàn thành${account ? ' · ' + account : ''}`}
+          </div>
+          <button
+            type="button"
+            className="vids-bell"
+            title="Nhật ký hoạt động"
+            onClick={() => setShowLog(true)}
+          >
+            🔔
+            {logErrCount > 0 && <span className="vids-bell-badge">{logErrCount}</span>}
+          </button>
+        </div>
+
+        <div className="vids-cfg">
+          <div className="vids-cfg-item">
+            <label>SỐ PROMPT SONG SONG</label>
+            <div className="vids-parallel-wrap">
+              <button
+                type="button"
+                className="vids-select"
+                onClick={() => setShowParallelMenu((v) => !v)}
+              >
+                {parallel} luồng ▾
+              </button>
+              {showParallelMenu && (
+                <div className="vids-menu">
+                  {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      className={`vids-menu-item ${parallel === n ? 'on' : ''}`}
+                      onClick={() => {
+                        setParallel(n)
+                        setShowParallelMenu(false)
+                      }}
+                    >
+                      {n} {parallel === n && <span className="vids-check">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="vids-cfg-item grow">
+            <label>GOOGLE DOC ID — Bỏ trống nếu dùng mặc định</label>
+            <input
+              className="vids-input"
+              value={docId}
+              onChange={(e) => setDocId(e.target.value)}
+              placeholder="Google Doc ID"
+            />
+          </div>
+        </div>
+
+        {!collapsed && (
+          <section className="vids-prompt-card">
+            <div className="vids-prompt-head">
+              <span className="vids-chip">Video {aspect}</span>
+              <div className="vids-prompt-actions">
+                <button
+                  type="button"
+                  className="vids-ghost"
+                  onClick={() => fileRef.current?.click()}
+                >
+                  Nạp TXT
+                </button>
+                <span className="vids-ghost muted">{promptCount} prompt</span>
+                <button
+                  type="button"
+                  className="vids-ghost"
+                  onClick={() => setCollapsed(true)}
+                >
+                  Thu gọn ▴
+                </button>
+              </div>
+            </div>
+            <textarea
+              className="vids-textarea"
+              value={promptText}
+              onChange={(e) => setPromptText(e.target.value)}
+              placeholder={PROMPT_PLACEHOLDER}
+              rows={7}
+            />
+            <div className="vids-ref-row">
+              <button
+                type="button"
+                className="vids-ref-btn"
+                onClick={() => imgRef.current?.click()}
+              >
+                + Tải ảnh tham chiếu
+              </button>
+              <span className="vids-muted">
+                Tải ảnh lên rồi gõ @tên trong prompt để AI tham chiếu nhân vật/bối cảnh
+              </span>
+            </div>
+            {refs.length > 0 && (
+              <div className="vids-ref-list">
+                {refs.map((r) => (
+                  <span key={r.id} className="vids-ref-tag">
+                    {r.tag}
+                    <button
+                      type="button"
+                      onClick={() => setRefs((prev) => prev.filter((x) => x.id !== r.id))}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="vids-run-row">
+              <div className="vids-aspect">
+                <button
+                  type="button"
+                  className={aspect === '16:9' ? 'on' : ''}
+                  onClick={() => setAspect('16:9')}
+                >
+                  16:9 Ngang
+                </button>
+                <button
+                  type="button"
+                  className={aspect === '9:16' ? 'on' : ''}
+                  onClick={() => setAspect('9:16')}
+                >
+                  9:16 Dọc
+                </button>
+              </div>
+              <div className="vids-parallel-mini">
+                <span>👤</span>
+                <select
+                  value={parallel}
+                  onChange={(e) => setParallel(Number(e.target.value))}
+                >
+                  {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="vids-parallel-mini" title="Thời lượng mỗi video">
+                <span>⏱</span>
+                <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
+                  {[4, 5, 6, 7, 8, 9, 10].map((n) => (
+                    <option key={n} value={n}>
+                      {n}s
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="vids-parallel-mini" title="Độ phân giải">
+                <select
+                  value={resolution}
+                  onChange={(e) => setResolution(e.target.value as '720p' | '1080p')}
+                >
+                  <option value="1080p">1080p</option>
+                  <option value="720p">720p</option>
+                </select>
+              </div>
+              {dangChay && (
+                <button type="button" className="vids-ghost" onClick={stopAll}>
+                  ⏹ Dừng
+                </button>
+              )}
+              <button
+                type="button"
+                className="vids-run"
+                onClick={runPrompts}
+                disabled={!promptCount}
+              >
+                ▶ Chạy prompt (ctrl+↵)
+              </button>
+            </div>
+          </section>
+        )}
+        {collapsed && (
+          <button
+            type="button"
+            className="vids-expand-prompt"
+            onClick={() => setCollapsed(false)}
+          >
+            Mở khung prompt ▾ · {promptCount} prompt · Video {aspect}
+          </button>
+        )}
+
+        <section className="vids-queue">
+          <div className="vids-queue-head">
+            <div className="vids-tabs">
+              <button
+                type="button"
+                className={queueTab === 'all' ? 'on' : ''}
+                onClick={() => setQueueTab('all')}
+              >
+                Tất cả ({counts.all})
+              </button>
+              <button
+                type="button"
+                className={queueTab === 'done' ? 'on' : ''}
+                onClick={() => setQueueTab('done')}
+              >
+                Hoàn thành ({counts.done})
+              </button>
+              <button
+                type="button"
+                className={`err ${queueTab === 'error' ? 'on' : ''}`}
+                onClick={() => setQueueTab('error')}
+              >
+                Lỗi ({counts.err})
+              </button>
+            </div>
+            <div className="vids-queue-tools">
+              <input
+                className="vids-search"
+                placeholder="Tìm prompt..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <button type="button" className="vids-ghost" onClick={selectAllFiltered}>
+                STT
+              </button>
+              <button type="button" className="vids-link warn" onClick={retryErrors}>
+                Tạo lại lỗi ({counts.err})
+              </button>
+              <button type="button" className="vids-link info" onClick={retryPending}>
+                Tạo lại tất cả chưa tạo ({counts.all - counts.done})
+              </button>
+              <button type="button" className="vids-link danger" onClick={clearAll}>
+                Xoá toàn bộ
+              </button>
+            </div>
+          </div>
+
+          <div className="vids-table-wrap">
+            <table className="vids-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 36 }}>
+                    <input
+                      type="checkbox"
+                      checked={
+                        filteredRows.length > 0 &&
+                        filteredRows.every((r) => selected.includes(r.id))
+                      }
+                      onChange={selectAllFiltered}
+                    />
+                  </th>
+                  <th style={{ width: 44 }}>#</th>
+                  <th style={{ width: 72 }}>MEDIA</th>
+                  <th>PROMPT</th>
+                  <th style={{ width: 72 }}>LOẠI</th>
+                  <th style={{ width: 88 }}>THỜI GIAN</th>
+                  <th style={{ width: 110 }}>TRẠNG THÁI</th>
+                  <th style={{ width: 110 }}>THAO TÁC</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="vids-empty">
+                      Chưa có mục trong hàng đợi
+                    </td>
+                  </tr>
+                )}
+                {filteredRows.map((r, idx) => (
+                  <tr key={r.id} className={r.status === 'loi' || r.status === 'tu_choi' ? 'is-err' : ''}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(r.id)}
+                        onChange={() => toggleSelect(r.id)}
+                      />
+                    </td>
+                    <td className="vids-num">
+                      {String(r.stt || idx + 1).padStart(2, '0')}
+                    </td>
+                    <td className="vids-media">
+                      {r.status === 'loi' || r.status === 'tu_choi' ? (
+                        <span className="vids-warn-tri" title="Lỗi">
+                          ⚠
+                        </span>
+                      ) : r.status === 'xong' && r.outPath ? (
+                        <a
+                          className="vids-media-ok"
+                          href={fileUrl(r.outPath)}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={r.outPath}
+                        >
+                          ▶
+                        </a>
+                      ) : (
+                        <span className="vids-media-wait">…</span>
+                      )}
+                    </td>
+                    <td className="vids-prompt-cell">
+                      <div className="vids-prompt-text">{r.prompt}</div>
+                      {r.status === 'xong' && r.outPath && (
+                        <div className="vids-muted" style={{ fontSize: 11 }}>
+                          {r.outPath}
+                          {r.tk ? ` · ${r.tk}` : ''}
+                        </div>
+                      )}
+                      {(r.status === 'loi' || r.status === 'tu_choi') && r.error && (
+                        <div className="vids-err-box">
+                          <div style={{ whiteSpace: 'pre-wrap' }}>{r.error}</div>
+                          {/cookie|SESSION_COOKIE|401/i.test(r.error) && (
+                            <button
+                              type="button"
+                              className="vids-cookie-link"
+                              onClick={() => onOpenSettings?.()}
+                            >
+                              Đổi cookie trong Cài đặt
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <span className="vids-type">{r.aspect}</span>
+                    </td>
+                    <td>{r.duration}</td>
+                    <td>
+                      <span
+                        className={`vids-status ${r.status === 'tu_choi' ? 'loi' : r.status}`}
+                      >
+                        {r.status === 'loi'
+                          ? 'Lỗi'
+                          : r.status === 'tu_choi'
+                            ? 'Bị từ chối'
+                            : r.status === 'xong'
+                              ? 'Xong'
+                              : r.status === 'dang_chay'
+                                ? r.buoc || 'Đang chạy'
+                                : 'Chờ'}
+                      </span>
+                    </td>
+                    <td className="vids-ops">
+                      <button
+                        type="button"
+                        title="Chạy lại"
+                        disabled={r.status === 'dang_chay'}
+                        onClick={() => retryIds([r.id], 'Chạy lại')}
+                      >
+                        ↻
+                      </button>
+                      {r.status === 'xong' && r.outPath && (
+                        <button type="button" title="Upscale x2 (realesrgan)" onClick={() => void upscale(r.outPath!)}>
+                          ⇧
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        title="Chép prompt"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(r.prompt).catch(() => {})
+                          flash('Đã chép prompt')
+                        }}
+                      >
+                        📋
+                      </button>
+                      <button
+                        type="button"
+                        title="Sửa"
+                        onClick={() => {
+                          setPromptText(r.prompt)
+                          setCollapsed(false)
+                          flash('Đã đưa prompt lên khung nhập')
+                        }}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        type="button"
+                        title="Xoá"
+                        disabled={r.status === 'dang_chay'}
+                        onClick={() => deleteRows([r.id])}
+                      >
+                        🗑
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      {showLog && (
+        <aside className="vids-log">
+          <div className="vids-log-head">
+            <div>
+              <strong>NHẬT KÍ HOẠT ĐỘNG</strong>
+              <span className="vids-muted">
+                {' '}
+                — {logs.length} dòng • {logErrCount} lỗi (mất khi đóng app)
+              </span>
+            </div>
+            <div className="vids-log-actions">
+              <button
+                type="button"
+                className="vids-ghost"
+                onClick={() => {
+                  setLogs([])
+                  flash('Đã xoá nhật ký')
+                }}
+              >
+                Xoá
+              </button>
+              <button
+                type="button"
+                className="vids-icon-btn"
+                onClick={() => setShowLog(false)}
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <div className="vids-log-body">
+            {logs.length === 0 && (
+              <div className="vids-muted" style={{ padding: 12 }}>
+                Chưa có dòng nhật ký
+              </div>
+            )}
+            {logs.map((l) => (
+              <div key={l.id} className={`vids-log-line ${l.level === 'LỖI' ? 'err' : ''}`}>
+                <span className="vids-log-time">{l.time}</span>
+                <span className={`vids-log-lvl ${l.level === 'LỖI' ? 'err' : ''}`}>
+                  {l.level}
+                </span>
+                <span className="vids-log-tag">[{l.tag}]</span>
+                <span className="vids-log-msg">{l.msg}</span>
+              </div>
+            ))}
+          </div>
+        </aside>
+      )}
+
+      {showCreate && (
+        <div className="vids-modal-backdrop" onClick={() => setShowCreate(false)}>
+          <div className="vids-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="vids-modal-title">
+              <span>📁</span> Tạo dự án mới
+            </div>
+            <label className="vids-field-label">Tên dự án</label>
+            <input
+              className="vids-input"
+              placeholder="Ví dụ: Quảng cáo sản phẩm"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') createProject()
+              }}
+            />
+            <label className="vids-field-label" style={{ marginTop: 12 }}>
+              Loại dự án
+            </label>
+            <div className="vids-kind-grid">
+              <button
+                type="button"
+                className={`vids-kind ${newKind === 'video' ? 'on' : ''}`}
+                onClick={() => setNewKind('video')}
+              >
+                <span className="vids-kind-ico">🎬</span>
+                <strong>Video</strong>
+                <span className="vids-muted">16:9 / 9:16</span>
+                {newKind === 'video' && <span className="vids-kind-check">✓</span>}
+              </button>
+              <button
+                type="button"
+                className={`vids-kind ${newKind === 'nano' ? 'on' : ''}`}
+                onClick={() => setNewKind('nano')}
+              >
+                <span className="vids-kind-ico">🖼️</span>
+                <strong>Nano Banana</strong>
+                <span className="vids-muted">Ảnh</span>
+                {newKind === 'nano' && <span className="vids-kind-check">✓</span>}
+              </button>
+            </div>
+            <div className="vids-modal-foot">
+              <button type="button" className="vids-ghost" onClick={() => setShowCreate(false)}>
+                Huỷ
+              </button>
+              <button type="button" className="vids-run" onClick={createProject}>
+                Tạo dự án
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".txt,.md,.json,.srt"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) loadTxt(f)
+          e.target.value = ''
+        }}
+      />
+      <input
+        ref={imgRef}
+        type="file"
+        accept="image/*"
+        hidden
+        multiple
+        onChange={(e) => {
+          const files = e.target.files
+          if (files) Array.from(files).forEach(addRef)
+          e.target.value = ''
+        }}
+      />
+
+      {toast && <div className="vids-toast">{toast}</div>}
+    </div>
+  )
+}

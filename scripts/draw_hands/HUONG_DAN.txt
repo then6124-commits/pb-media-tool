@@ -1,0 +1,10 @@
+Anh ban tay / but cho video ve tay (scripts/draw_engine.py)
+
+1. Bo file PNG NEN TRONG SUOT vao thu muc nay, dat ten = ma trong khung Draw
+   (vd: female_fair_pencil_right.png, marker_only_black.png ...).
+2. Khai dau but trong hands.json (toa do pixel tren anh GOC):
+      { "female_fair_pencil_right": { "tip": [247, 136], "cao": 0.45 } }
+   "cao" = chieu cao ban tay so voi khung hinh (0.45 = 45%).
+3. Chua co anh nao thi tool dung but chi tu ve. Chon "An ban tay" de chi ve net.
+
+Luu y: KHONG chep anh pen-presets cua SuperVeo — do la tai san cua ho.

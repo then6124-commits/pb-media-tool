@@ -1,0 +1,70 @@
+:root {
+  color-scheme: dark;
+  --bg: #101726;
+  --bg-deep: #0c121c;
+  --bg-panel: #151d2c;
+  --bg-card: #182234;
+  --bg-hover: rgba(32, 201, 151, 0.08);
+  --border: #243044;
+  --border-soft: #1a2436;
+  --text: #e8eef6;
+  --muted: #8b97ab;
+  --accent: #20c997;
+  --accent-dim: rgba(32, 201, 151, 0.18);
+  --accent-border: rgba(32, 201, 151, 0.45);
+  --success: #34d399;
+  --warn: #fbbf24;
+  --danger: #ef4444;
+  --danger-bg: rgba(239, 68, 68, 0.14);
+  --radius: 10px;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  line-height: 1.45;
+  font-weight: 400;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: var(--bg);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2e3a50;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

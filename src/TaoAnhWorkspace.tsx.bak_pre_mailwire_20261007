@@ -1,0 +1,702 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import './tao_anh.css'
+import DrawEngineModal, {
+  DEFAULT_DRAW_CONFIG,
+  type DrawEngineConfig,
+} from './DrawEngineModal'
+
+type RatioId =
+  | '16:9'
+  | '9:16'
+  | '1:1'
+  | '4:3'
+  | '3:4'
+  | '3:2'
+  | '2:3'
+
+type ModelId = 'Banana 2' | 'Banana 2 Lite' | 'Banana Pro' | 'Banana Preview'
+
+type QueueItem = {
+  id: number
+  text: string
+  model: ModelId
+  ratio: RatioId
+  status: 'wait' | 'error' | 'run'
+  error?: string
+}
+
+type ResultItem = {
+  id: number
+  text: string
+  status: 'error' | 'done'
+  error?: string
+  model: ModelId
+  ratio: RatioId
+}
+
+type RefImage = { id: number; name: string; tag: string }
+
+const MODELS: ModelId[] = ['Banana 2', 'Banana 2 Lite', 'Banana Pro', 'Banana Preview']
+
+const RATIOS: { id: RatioId; label: string }[] = [
+  { id: '16:9', label: 'Ngang 16:9' },
+  { id: '9:16', label: 'Dọc 9:16' },
+  { id: '1:1', label: 'Vuông 1:1' },
+  { id: '4:3', label: 'Ngang 4:3' },
+  { id: '3:4', label: 'Dọc 3:4' },
+  { id: '3:2', label: 'Ngang 3:2' },
+  { id: '2:3', label: 'Dọc 2:3' },
+]
+
+const LS_MODEL = 'pb.anh.model'
+const LS_RATIO = 'pb.anh.ratio'
+const LS_CROP = 'pb.anh.crop'
+const LS_AUTO = 'pb.anh.autoDl'
+const LS_DRAW = 'pb.anh.draw'
+const LS_DRAW_CFG = 'pb.anh.drawCfg'
+const LS_QUEUE = 'pb.anh.queue'
+const LS_OUT = 'pb.anh.outDir'
+const COOKIE_ERR = 'No valid cookie found'
+
+function loadStr(key: string, fallback: string) {
+  try {
+    const v = localStorage.getItem(key)
+    if (v != null && v !== '') return v
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+function loadBool(key: string, fallback: boolean) {
+  try {
+    const v = localStorage.getItem(key)
+    if (v === '1' || v === 'true') return true
+    if (v === '0' || v === 'false') return false
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw) return JSON.parse(raw) as T
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+function saveJson(key: string, val: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(val))
+  } catch {
+    /* ignore */
+  }
+}
+
+function parsePrompts(raw: string): string[] {
+  return raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+}
+
+function snippet(text: string, n = 48) {
+  const one = text.replace(/\s+/g, ' ').trim()
+  return one.length <= n ? one : one.slice(0, n - 1) + '…'
+}
+
+export default function TaoAnhWorkspace() {
+  const [model, setModel] = useState<ModelId>(() => {
+    const v = loadStr(LS_MODEL, 'Banana 2')
+    return (MODELS.includes(v as ModelId) ? v : 'Banana 2') as ModelId
+  })
+  const [ratio, setRatio] = useState<RatioId>(() => {
+    const v = loadStr(LS_RATIO, '16:9')
+    return (RATIOS.some((r) => r.id === v) ? v : '16:9') as RatioId
+  })
+  const [modelOpen, setModelOpen] = useState(false)
+  const [ratioOpen, setRatioOpen] = useState(false)
+  const [prompt, setPrompt] = useState('')
+  const [crop, setCrop] = useState(() => loadBool(LS_CROP, false))
+  const [autoDl, setAutoDl] = useState(() => loadBool(LS_AUTO, false))
+  const [draw, setDraw] = useState(() => loadBool(LS_DRAW, false))
+  const [drawOpen, setDrawOpen] = useState(false)
+  const [drawCfg, setDrawCfg] = useState<DrawEngineConfig>(() => {
+    const saved = loadJson<Partial<DrawEngineConfig>>(LS_DRAW_CFG, {})
+    return { ...DEFAULT_DRAW_CONFIG, ...saved }
+  })
+  const [refsOpen, setRefsOpen] = useState(false)
+  const [refs, setRefs] = useState<RefImage[]>([])
+  const [outDir, setOutDir] = useState(() => loadStr(LS_OUT, 'K:\\Output\\Tạo Ảnh'))
+  const [queueOpen, setQueueOpen] = useState(true)
+  const [queue, setQueue] = useState<QueueItem[]>(() => loadJson(LS_QUEUE, [] as QueueItem[]))
+  const [results, setResults] = useState<ResultItem[]>([])
+  const [selected, setSelected] = useState<number[]>([])
+  const [toast, setToast] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const refFileRef = useRef<HTMLInputElement>(null)
+  const nextQ = useRef(Math.max(0, ...queue.map((q) => q.id)) + 1)
+  const nextR = useRef(1)
+  const nextRef = useRef(1)
+
+  const promptLines = useMemo(() => parsePrompts(prompt), [prompt])
+  const waitCount = queue.filter((q) => q.status === 'wait').length
+  const errCount = queue.filter((q) => q.status === 'error').length
+  const refCount = refs.length
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_MODEL, model)
+      localStorage.setItem(LS_RATIO, ratio)
+      localStorage.setItem(LS_CROP, crop ? '1' : '0')
+      localStorage.setItem(LS_AUTO, autoDl ? '1' : '0')
+      localStorage.setItem(LS_DRAW, draw ? '1' : '0')
+      localStorage.setItem(LS_DRAW_CFG, JSON.stringify(drawCfg))
+      localStorage.setItem(LS_OUT, outDir)
+    } catch {
+      /* ignore */
+    }
+  }, [model, ratio, crop, autoDl, draw, drawCfg, outDir])
+
+  useEffect(() => {
+    saveJson(LS_QUEUE, queue)
+  }, [queue])
+
+  function flash(msg: string) {
+    setToast(msg)
+    window.setTimeout(() => setToast(null), 2200)
+  }
+
+  function addToQueue() {
+    const lines = parsePrompts(prompt)
+    if (!lines.length) {
+      flash('Nhập ít nhất 1 prompt (mỗi dòng một prompt)')
+      return
+    }
+    const items: QueueItem[] = lines.map((text) => {
+      const id = nextQ.current++
+      return { id, text, model, ratio, status: 'wait' as const }
+    })
+    setQueue((prev) => [...prev, ...items])
+    setPrompt('')
+    flash(`Đã thêm ${items.length} prompt vào hàng đợi`)
+  }
+
+  function clearQueue() {
+    if (!queue.length) return
+    if (!window.confirm(`Xóa ${queue.length} mục trong hàng đợi?`)) return
+    setQueue([])
+  }
+
+  function removeQueueItem(id: number) {
+    setQueue((prev) => prev.filter((q) => q.id !== id))
+  }
+
+  /** Mock gen only — never reads real cookies / browser sessions. */
+  function startGen() {
+    const pending = queue.filter((q) => q.status === 'wait' || q.status === 'error')
+    if (!pending.length) {
+      flash('Hàng đợi trống — thêm prompt trước')
+      return
+    }
+    setBusy(true)
+    setQueue((prev) =>
+      prev.map((q) =>
+        q.status === 'wait' || q.status === 'error'
+          ? { ...q, status: 'run' as const, error: undefined }
+          : q,
+      ),
+    )
+    window.setTimeout(() => {
+      const failed: ResultItem[] = pending.map((q) => {
+        const id = nextR.current++
+        return {
+          id,
+          text: q.text,
+          status: 'error' as const,
+          error: COOKIE_ERR,
+          model: q.model,
+          ratio: q.ratio,
+        }
+      })
+      setQueue((prev) =>
+        prev.map((q) =>
+          pending.some((p) => p.id === q.id)
+            ? { ...q, status: 'error' as const, error: COOKIE_ERR }
+            : q,
+        ),
+      )
+      setResults((prev) => [...failed, ...prev])
+      setBusy(false)
+      flash(`Mock: ${failed.length} lỗi — ${COOKIE_ERR} (không đọc cookie thật)`)
+    }, 700)
+  }
+
+  function onLoadFile(file: File | null) {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const text = String(reader.result || '')
+      setPrompt((prev) => (prev.trim() ? prev.trimEnd() + '\n' + text : text))
+      flash(`Đã tải ${file.name}`)
+    }
+    reader.readAsText(file)
+  }
+
+  function addRefFiles(files: FileList | null) {
+    if (!files?.length) return
+    const added: RefImage[] = []
+    Array.from(files).forEach((f) => {
+      const id = nextRef.current++
+      const base = f.name.replace(/\.[^.]+$/, '').replace(/\s+/g, '').slice(0, 16) || `ref${id}`
+      added.push({ id, name: f.name, tag: `@${base}` })
+    })
+    setRefs((prev) => [...prev, ...added])
+    setRefsOpen(true)
+    flash(`Đã thêm ${added.length} ảnh tham chiếu (mock)`)
+  }
+
+  function insertTag(tag: string) {
+    setPrompt((prev) => (prev ? prev + (prev.endsWith(' ') || prev.endsWith('\n') ? '' : ' ') + tag : tag))
+  }
+
+  function toggleSelect(id: number) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
+
+  function deleteSelectedResults() {
+    if (!selected.length) {
+      flash('Chưa chọn kết quả')
+      return
+    }
+    setResults((prev) => prev.filter((r) => !selected.includes(r.id)))
+    setSelected([])
+  }
+
+  function clearResults() {
+    if (!results.length) return
+    if (!window.confirm(`Xóa ${results.length} kết quả?`)) return
+    setResults([])
+    setSelected([])
+  }
+
+  const ratioLabel = RATIOS.find((r) => r.id === ratio)?.label || ratio
+
+  return (
+    <div className="ta-root">
+      <div className={`ta-layout ${queueOpen ? '' : 'queue-collapsed'}`}>
+        {/* LEFT — prompt */}
+        <aside className="ta-col ta-left">
+          <div className="ta-toolbar">
+            <button
+              type="button"
+              className="ta-btn ghost teal"
+              onClick={() => fileRef.current?.click()}
+              title="Tải tệp prompt"
+            >
+              📄 Tải tệp
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".txt,.md,.csv,.prompt"
+              hidden
+              onChange={(e) => {
+                onLoadFile(e.target.files?.[0] || null)
+                e.target.value = ''
+              }}
+            />
+            <div className="ta-toolbar-right">
+              <div className="ta-dd">
+                <button
+                  type="button"
+                  className="ta-dd-btn"
+                  onClick={() => {
+                    setModelOpen((v) => !v)
+                    setRatioOpen(false)
+                  }}
+                >
+                  {model} <span className="ta-caret">▾</span>
+                </button>
+                {modelOpen && (
+                  <div className="ta-dd-menu">
+                    {MODELS.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        className={m === model ? 'on' : ''}
+                        onClick={() => {
+                          setModel(m)
+                          setModelOpen(false)
+                        }}
+                      >
+                        {m === model && <span className="ta-dd-tick">✓</span>}
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="ta-dd">
+                <button
+                  type="button"
+                  className="ta-dd-btn"
+                  onClick={() => {
+                    setRatioOpen((v) => !v)
+                    setModelOpen(false)
+                  }}
+                >
+                  {ratioLabel} <span className="ta-caret">▾</span>
+                </button>
+                {ratioOpen && (
+                  <div className="ta-dd-menu">
+                    {RATIOS.map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        className={r.id === ratio ? 'on' : ''}
+                        onClick={() => {
+                          setRatio(r.id)
+                          setRatioOpen(false)
+                        }}
+                      >
+                        {r.id === ratio && <span className="ta-dd-tick">✓</span>}
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="ta-prompt-wrap">
+            <span className="ta-prompt-count" title="Số dòng prompt">
+              {promptLines.length} prompts
+            </span>
+            <textarea
+              className="ta-prompt"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder=""
+              spellCheck={false}
+            />
+            {!prompt && (
+              <div className="ta-prompt-hint" aria-hidden>
+                <div className="ta-hint-title">Nhập prompt để tạo ảnh...</div>
+                <div className="ta-hint-ex">Ví dụ:</div>
+                <div className="ta-hint-bullet">• Mỗi dòng một prompt:</div>
+                <div className="ta-hint-code">A cat playing in the garden</div>
+                <div className="ta-hint-code">A dog running on the beach</div>
+                <div className="ta-hint-bullet">• Dùng @tag để chèn ảnh tham chiếu:</div>
+                <div className="ta-hint-code">Cô gái mặc @ao đang đi trên phố</div>
+                <div className="ta-hint-code">@nguoimay mặc @quanjean ngồi uống cafe</div>
+              </div>
+            )}
+          </div>
+
+          <div className="ta-opts">
+            <button
+              type="button"
+              className="ta-btn ghost sm"
+              title={outDir}
+              onClick={() => {
+                const next = window.prompt('Nơi lưu (mock path)', outDir)
+                if (next != null && next.trim()) {
+                  setOutDir(next.trim())
+                  flash('Đã cập nhật nơi lưu (mock)')
+                }
+              }}
+            >
+              📁 Nơi lưu
+            </button>
+            <div className="ta-opts-right">
+              <label className="ta-opt">
+                <input type="checkbox" checked={crop} onChange={(e) => setCrop(e.target.checked)} />
+                <span>Crop</span>
+              </label>
+              <label className="ta-opt">
+                <input type="checkbox" checked={autoDl} onChange={(e) => setAutoDl(e.target.checked)} />
+                <span>Tự tải</span>
+              </label>
+              <label className="ta-opt">
+                <input type="checkbox" checked={draw} onChange={(e) => setDraw(e.target.checked)} />
+                <span>🎨 Draw</span>
+              </label>
+              <button
+                type="button"
+                className="ta-icon-btn"
+                title="Tuỳ chọn Draw"
+                onClick={() => {
+                  if (!draw) setDraw(true)
+                  setDrawOpen(true)
+                }}
+              >
+                ⚙
+              </button>
+            </div>
+          </div>
+
+          <div className={`ta-refs ${refsOpen ? 'open' : ''}`}>
+            <button type="button" className="ta-refs-toggle" onClick={() => setRefsOpen((v) => !v)}>
+              {refsOpen ? '▾' : '▸'} Ảnh tham chiếu (tuỳ chọn)
+              {refs.length > 0 && <span className="ta-badge">{refs.length}</span>}
+            </button>
+            {refsOpen && (
+              <div className="ta-refs-body">
+                <div className="ta-refs-actions">
+                  <button type="button" className="ta-btn ghost sm" onClick={() => refFileRef.current?.click()}>
+                    + Thêm ảnh
+                  </button>
+                  <input
+                    ref={refFileRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      addRefFiles(e.target.files)
+                      e.target.value = ''
+                    }}
+                  />
+                  {refs.length > 0 && (
+                    <button type="button" className="ta-text danger" onClick={() => setRefs([])}>
+                      Xóa hết
+                    </button>
+                  )}
+                </div>
+                {refs.length === 0 ? (
+                  <p className="ta-muted">Chưa có ảnh — thêm rồi dùng @tag trong prompt.</p>
+                ) : (
+                  <ul className="ta-ref-list">
+                    {refs.map((r) => (
+                      <li key={r.id}>
+                        <button type="button" className="ta-tag" onClick={() => insertTag(r.tag)} title="Chèn vào prompt">
+                          {r.tag}
+                        </button>
+                        <span className="ta-ref-name">{r.name}</span>
+                        <button
+                          type="button"
+                          className="ta-x"
+                          onClick={() => setRefs((prev) => prev.filter((x) => x.id !== r.id))}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button type="button" className="ta-primary" onClick={addToQueue}>
+            + Thêm vào hàng đợi ({promptLines.length} prompts)
+          </button>
+        </aside>
+
+        {/* MIDDLE rail / queue */}
+        <div className="ta-rail">
+          <button
+            type="button"
+            className="ta-rail-btn"
+            title={queueOpen ? 'Thu gọn hàng đợi' : 'Mở hàng đợi'}
+            onClick={() => setQueueOpen((v) => !v)}
+          >
+            {queueOpen ? '‹' : '›'}
+          </button>
+          <span className="ta-rail-badge">{queue.length}</span>
+        </div>
+
+        {queueOpen && (
+          <section className="ta-col ta-mid">
+            <div className="ta-mid-head">
+              <div className="ta-mid-stats">
+                <span className="ta-stat wait">{waitCount} chờ</span>
+                {errCount > 0 && <span className="ta-stat err">{errCount} ✕</span>}
+              </div>
+              <div className="ta-mid-actions">
+                <button type="button" className="ta-icon-btn" title="Xóa hàng đợi" onClick={clearQueue}>
+                  🗑
+                </button>
+                <span className="ta-round">{queue.length}</span>
+              </div>
+            </div>
+
+            <div className="ta-queue-body">
+              {queue.length === 0 ? (
+                <div className="ta-empty">Chưa có prompt trong hàng đợi.</div>
+              ) : (
+                <ul className="ta-queue-list">
+                  {queue.map((q, idx) => (
+                    <li key={q.id} className={`ta-q-item st-${q.status}`}>
+                      <div className="ta-q-top">
+                        <span className="ta-q-num">#{idx + 1}</span>
+                        <span className="ta-q-meta">
+                          {q.model} · {q.ratio}
+                        </span>
+                        <button type="button" className="ta-x" onClick={() => removeQueueItem(q.id)}>
+                          ×
+                        </button>
+                      </div>
+                      {q.error && <div className="ta-q-err">{q.error}</div>}
+                      <div className="ta-q-text">{q.text}</div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <button type="button" className="ta-primary alt" disabled={busy} onClick={startGen}>
+              <div>{busy ? 'Đang gen (mock)…' : 'Bắt đầu gen'}</div>
+              <div className="ta-primary-sub">
+                {queue.length} prompt · {refCount} ảnh tham chiếu
+              </div>
+            </button>
+          </section>
+        )}
+
+        {/* RIGHT — results */}
+        <section className="ta-col ta-right">
+          <div className="ta-right-head">
+            <div className="ta-result-title">
+              Kết quả <span className="ta-round">{results.length}</span>
+            </div>
+            <div className="ta-toolbar-icons">
+              <button
+                type="button"
+                title="Làm mới"
+                onClick={() => flash('Đã làm mới danh sách (mock)')}
+              >
+                ↻
+              </button>
+              <button
+                type="button"
+                title="Chọn tất cả"
+                onClick={() => setSelected(results.map((r) => r.id))}
+              >
+                ▢
+              </button>
+              <button type="button" title="Xóa đã chọn" onClick={deleteSelectedResults}>
+                🗑
+              </button>
+              <button
+                type="button"
+                title="Tải xuống"
+                onClick={() =>
+                  flash(
+                    selected.length
+                      ? `Mock tải ${selected.length} ảnh`
+                      : 'Chọn kết quả để tải (mock)',
+                  )
+                }
+              >
+                ⬇
+              </button>
+              <button type="button" className="danger" title="Xóa hết" onClick={clearResults}>
+                ✕
+              </button>
+              <span className="ta-round sm">{results.length}</span>
+            </div>
+          </div>
+
+          <div className="ta-results-body">
+            {results.length === 0 ? (
+              <div className="ta-empty-results">
+                <div className="ta-empty-ico">🖼</div>
+                <h3>Chưa có kết quả</h3>
+                <p>Thêm prompt → Bắt đầu gen. Mock sẽ báo &quot;{COOKIE_ERR}&quot; (không đọc cookie thật).</p>
+              </div>
+            ) : (
+              <div className="ta-grid">
+                {results.map((r, idx) => (
+                  <article
+                    key={r.id}
+                    className={`ta-card st-${r.status} ${selected.includes(r.id) ? 'sel' : ''}`}
+                    onClick={() => toggleSelect(r.id)}
+                  >
+                    <div className="ta-card-num">{idx + 1}</div>
+                    <div className="ta-card-body">
+                      {r.status === 'error' ? (
+                        <>
+                          <div className="ta-card-x">✕</div>
+                          <div className="ta-card-err">{r.error || COOKIE_ERR}</div>
+                        </>
+                      ) : (
+                        <div className="ta-card-ok">✓ Mock ảnh</div>
+                      )}
+                      <div className="ta-card-snip">{snippet(r.text)}</div>
+                    </div>
+                    <div className="ta-card-foot" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        title="Copy prompt"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(r.text)
+                          flash('Đã copy prompt')
+                        }}
+                      >
+                        ⧉
+                      </button>
+                      <button
+                        type="button"
+                        title="Sửa / đưa lại prompt"
+                        onClick={() => {
+                          setPrompt(r.text)
+                          flash('Đã đưa prompt lên ô nhập')
+                        }}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        type="button"
+                        title="Remix"
+                        onClick={() => {
+                          setPrompt(r.text)
+                          flash('Remix — chỉnh prompt rồi thêm lại hàng đợi')
+                        }}
+                      >
+                        ✦
+                      </button>
+                      <button
+                        type="button"
+                        title="Xóa"
+                        onClick={() => {
+                          setResults((prev) => prev.filter((x) => x.id !== r.id))
+                          setSelected((prev) => prev.filter((x) => x !== r.id))
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {toast && <div className="ta-toast">{toast}</div>}
+      {drawOpen && (
+        <DrawEngineModal
+          open={drawOpen}
+          initial={drawCfg}
+          onClose={() => setDrawOpen(false)}
+          onApply={(cfg) => {
+            setDrawCfg(cfg)
+            setDraw(true)
+            setDrawOpen(false)
+            flash(`Đã áp dụng Draw: ${cfg.handName}`)
+          }}
+        />
+      )}
+
+    </div>
+  )
+}
