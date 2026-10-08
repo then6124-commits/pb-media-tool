@@ -6122,3 +6122,15 @@ textarea.flow-frame-box { width: 100%; resize: vertical; color: inherit; font: i
 .grok-or { text-align: center; font-size: 12px; opacity: 0.6; margin: 10px 0 2px; }
 .grok-or::before, .grok-or::after { content: ''; display: inline-block; width: 30%; height: 1px; background: currentColor; opacity: 0.3; vertical-align: middle; margin: 0 8px; }
 .grok-login-big { padding: 12px !important; font-size: 14px !important; }
+.clear-prompt {
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  font-size: 12px; font-weight: 600; cursor: pointer; padding: 4px 10px; border-radius: 8px;
+  border: 1px solid rgba(239,68,68,0.45); background: rgba(239,68,68,0.08); color: #f87171;
+}
+.clear-prompt:hover:not(:disabled) { background: rgba(239,68,68,0.18); }
+.clear-prompt:disabled { opacity: 0.4; cursor: default; }
+.clear-prompt.undo { border-color: rgba(56,189,248,0.5); background: rgba(56,189,248,0.1); color: #38bdf8; }
+.prompt-tools { display: inline-flex; align-items: center; gap: 6px; }
+.va-card-title .prompt-tools { float: right; margin-top: -3px; }
+.ta-prompt-wrap .prompt-tools { position: absolute; top: 8px; right: 96px; z-index: 2; }
+.ta-prompt-wrap .prompt-tools .one-prompt { background: rgba(15,23,42,0.6); }

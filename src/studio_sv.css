@@ -473,3 +473,7 @@
 .st-edit-text { min-height: 260px !important; resize: vertical; font-size: 13px !important; }
 .st-edit-modal .vids-modal-foot { display: flex; align-items: center; gap: 8px; }
 .st-gridico { stroke-width: 1.8; }
+@media (max-width: 1500px) {
+  .st-search input, .st-search .vids-search, .st-search .muse-search { width: 110px; }
+  .st-size input { width: 70px; }
+}

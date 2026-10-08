@@ -1,4 +1,4 @@
-import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
+import { ClearPromptBtn, OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useState } from 'react'
 import { api, baseName, type BridgeJob, dirName, errText, fileUrl, openFolder, pickFiles, useJobs } from './bridge'
 import './mini.css'
@@ -336,7 +336,10 @@ export default function SeedanceWorkspace() {
           <section className="va-card">
             <div className="va-card-title">
               {mode === 't2v' ? 'Prompt — mỗi dòng một video' : 'Prompt chuyển động — dòng i dùng cho ảnh i (lặp lại nếu ít dòng hơn)'}
-              <OnePromptCheck on={onePrompt} setOn={setOnePrompt} className="one-prompt-right" />
+              <span className="prompt-tools">
+                <ClearPromptBtn value={prompts} setValue={setPrompts} />
+                <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
+              </span>
             </div>
             <textarea
               className="rw-textarea sp"

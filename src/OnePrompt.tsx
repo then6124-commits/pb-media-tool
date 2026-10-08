@@ -83,3 +83,42 @@ export function OnePromptCheck({ on, setOn, className = '' }: { on: boolean; set
     </label>
   )
 }
+
+/** Nút xoá nhanh nội dung ô prompt; bấm xong có «Hoàn tác» trong 6 giây phòng bấm nhầm. */
+export function ClearPromptBtn({ value, setValue }: { value: string; setValue: (v: string) => void }) {
+  const [undo, setUndo] = useState<string | null>(null)
+  useEffect(() => {
+    if (undo === null) return
+    const t = window.setTimeout(() => setUndo(null), 6000)
+    return () => window.clearTimeout(t)
+  }, [undo])
+  if (undo !== null) {
+    return (
+      <button
+        type="button"
+        className="clear-prompt undo"
+        title="Lấy lại nội dung vừa xoá"
+        onClick={() => {
+          setValue(undo)
+          setUndo(null)
+        }}
+      >
+        ↶ Hoàn tác
+      </button>
+    )
+  }
+  return (
+    <button
+      type="button"
+      className="clear-prompt"
+      disabled={!value.trim()}
+      title="Xoá toàn bộ nội dung ô prompt"
+      onClick={() => {
+        setUndo(value)
+        setValue('')
+      }}
+    >
+      ✕ Xoá prompt
+    </button>
+  )
+}

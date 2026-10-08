@@ -1,4 +1,4 @@
-import { OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
+import { ClearPromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './tao_anh.css'
 import DrawEngineModal, {
@@ -525,7 +525,10 @@ export default function TaoAnhWorkspace() {
             <span className="ta-prompt-count" title="Số dòng prompt">
               {promptLines.length} prompts
             </span>
-            <OnePromptCheck on={onePrompt} setOn={setOnePrompt} className="ta-one-prompt" />
+            <span className="prompt-tools">
+              <ClearPromptBtn value={prompt} setValue={setPrompt} />
+              <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
+            </span>
             <textarea
               className="ta-prompt"
               value={prompt}
