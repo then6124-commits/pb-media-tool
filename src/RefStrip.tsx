@@ -7,8 +7,11 @@ export type RefItem = { id: number; name: string; tag: string; path: string }
  *  CHAR_01_O4_lily.png → CHAR_01_O4 · GUEST_01_joe.png → GUEST_01 · không có mã → cả tên file. */
 export function maAnh(name: string): string {
   const goc = name.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '')
-  const m = /(?<![A-Za-z0-9])[A-Za-z]{2,12}_\d{1,3}(?:_[A-Za-z]{1,3}\d{1,3})*(?![0-9])/.exec(goc)
-  return (m ? m[0] : goc).toUpperCase()
+  const m = /(?<![A-Za-z0-9])[A-Za-z]{2,12}_\d{1,3}(?:_[A-Za-z0]{1,3}\d{1,3})*(?![0-9])/.exec(goc)
+  if (!m) return goc.toUpperCase()
+  // Gõ nhầm số 0 thay chữ O trong đuôi trang phục: CHAR_02_04 → CHAR_02_O4 (giống bridge)
+  const k = /^([A-Z]{2,12}_\d{1,3})((?:_[A-Z0]{1,3}\d{1,3})+)$/.exec(m[0].toUpperCase())
+  return k ? k[1] + k[2].replace(/_0(?=\d)/g, '_O') : m[0].toUpperCase()
 }
 
 const fileUrl = (p: string) => `/api/file?path=${encodeURIComponent(p)}`
@@ -147,4 +150,27 @@ export function RefStrip({
       )}
     </div>
   )
+}
+
+/** Mã ở dòng mã đầu prompt («008. @CHAR_01_O4 | @BG_05. …») — cùng luật với bridge (ma_dau_prompt). */
+export function maDauPrompt(prompt: string): string[] {
+  const m = /^\s*(?:\d{1,4}\s*[.)\-:]\s*)?((?:@[\w-]+[\s,|;/+&]*)+)/.exec(prompt || '')
+  if (!m) return []
+  const ra: string[] = []
+  for (const x of m[1].matchAll(/@([\w-]+)/g)) {
+    const ma = maAnh(x[1])
+    if (!ra.includes(ma)) ra.push(ma)
+  }
+  return ra
+}
+
+/** Cảnh nào gọi mã chưa có thẻ ảnh: [{canh: '008', thieu: ['GUEST_01']}]. */
+export function maThieu(prompts: string[], refs: { name: string; path: string }[]): { canh: string; thieu: string[] }[] {
+  const co = new Set(refs.map((r) => maAnh(r.name || r.path)))
+  const ra: { canh: string; thieu: string[] }[] = []
+  prompts.forEach((p, i) => {
+    const thieu = maDauPrompt(p).filter((m) => !co.has(m))
+    if (thieu.length) ra.push({ canh: /^\s*(\d{1,4})/.exec(p)?.[1] || String(i + 1), thieu })
+  })
+  return ra
 }

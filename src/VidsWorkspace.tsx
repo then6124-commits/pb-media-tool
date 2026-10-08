@@ -1,7 +1,7 @@
 import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Ico } from './SettingsPanes'
-import { RefStrip, rememberThumb } from './RefStrip'
+import { RefStrip, maAnh, maThieu, rememberThumb } from './RefStrip'
 import './studio_sv.css'
 
 type ProjKind = 'video' | 'nano'
@@ -231,6 +231,17 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   const [showParallelMenu, setShowParallelMenu] = useState(false)
   const [showLog, setShowLog] = useState(false)
   const [logs, setLogs] = useState<LogLine[]>([])
+  const [bridgeVer, setBridgeVer] = useState('')
+  useEffect(() => {
+    const hoi = () =>
+      fetch('/api/health')
+        .then((r) => r.json())
+        .then((h: { ver?: string }) => setBridgeVer(h.ver || 'bản cũ'))
+        .catch(() => setBridgeVer(''))
+    hoi()
+    const t = window.setInterval(hoi, 15000)
+    return () => window.clearInterval(t)
+  }, [])
   const [toast, setToast] = useState<string | null>(null)
   const [selected, setSelected] = useState<string[]>([])
   const [bridgeOk, setBridgeOk] = useState<boolean | null>(null)
@@ -567,6 +578,12 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
       flash('Chưa có prompt')
       return
     }
+    // Đối chiếu dòng mã đầu từng prompt với thẻ ảnh tham chiếu — thiếu thì hỏi trước khi chạy
+    const thieu = maThieu(items, refs)
+    if (thieu.length) {
+      const ds = thieu.map((t) => `• Cảnh ${t.canh}: ${t.thieu.map((m) => '@' + m).join(', ')}`).join('\n')
+      if (!window.confirm(`Chưa có ảnh tham chiếu cho mã:\n${ds}\n\nCác cảnh này sẽ thiếu nhân vật/bối cảnh. Vẫn chạy?`)) return
+    }
     if (bridgeOk === false) {
       flash('Cầu nối Python chưa chạy — tắt và chạy lại npm run dev')
       return
@@ -581,7 +598,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
         out_dir: savePath,
         doc_id: docId,
         project: active?.name || 'du_an',
-        refs: refs.map((r) => ({ tag: r.tag, path: r.path })),
+        refs: refs.map((r) => ({ tag: '@' + maAnh(r.name || r.path), path: r.path })),
       })
       setQueueTab('all')
       flash(`Đã gửi ${items.length} prompt`)
@@ -620,7 +637,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
           out_dir: savePath,
           doc_id: docId,
           project: active?.name || 'du_an',
-          refs: refs.map((r) => ({ tag: r.tag, path: r.path })),
+          refs: refs.map((r) => ({ tag: '@' + maAnh(r.name || r.path), path: r.path })),
         })
         flash('Đã tạo video mới với prompt đã sửa (video cũ giữ nguyên)')
       } else {
@@ -1411,8 +1428,27 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                 {' '}
                 — {logs.length} dòng • {logErrCount} lỗi (mất khi đóng app)
               </span>
+              {bridgeVer && <span className="st-ver" title="Phiên bản cầu nối Python đang chạy">cầu nối {bridgeVer}</span>}
             </div>
             <div className="vids-log-actions">
+              <button
+                type="button"
+                className="vids-ghost"
+                title="Chép toàn bộ nhật ký (cũ → mới) để gửi"
+                onClick={() => {
+                  const text = logs
+                    .slice()
+                    .reverse()
+                    .map((l) => `${l.time}  ${l.level}  [${l.tag}]  ${l.msg}`)
+                    .join('\n')
+                  navigator.clipboard
+                    ?.writeText(`cầu nối: ${bridgeVer || '?'}\n${text}`)
+                    .then(() => flash(`Đã chép ${logs.length} dòng nhật ký`))
+                    .catch(() => flash('Không chép được — bấm giữ chọn chữ rồi Ctrl+C'))
+                }}
+              >
+                Copy log
+              </button>
               <button
                 type="button"
                 className="vids-ghost"

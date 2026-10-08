@@ -1,7 +1,7 @@
 import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Ico } from './SettingsPanes'
-import { RefStrip, rememberThumb } from './RefStrip'
+import { RefStrip, maAnh, maThieu, rememberThumb } from './RefStrip'
 import './studio_sv.css'
 
 /**
@@ -167,6 +167,17 @@ export default function MuseWorkspace() {
   const [newName, setNewName] = useState('')
   const [showLog, setShowLog] = useState(false)
   const [logs, setLogs] = useState<LogLine[]>([])
+  const [bridgeVer, setBridgeVer] = useState('')
+  useEffect(() => {
+    const hoi = () =>
+      fetch('/api/health')
+        .then((r) => r.json())
+        .then((h: { ver?: string }) => setBridgeVer(h.ver || 'bản cũ'))
+        .catch(() => setBridgeVer(''))
+    hoi()
+    const t = window.setInterval(hoi, 15000)
+    return () => window.clearInterval(t)
+  }, [])
   const [toast, setToast] = useState<string | null>(null)
   const [selected, setSelected] = useState<string[]>([])
   const [bridgeOk, setBridgeOk] = useState<boolean | null>(null)
@@ -371,6 +382,12 @@ export default function MuseWorkspace() {
       flash('Cầu nối Python chưa chạy — tắt và chạy lại npm run dev')
       return
     }
+    // Đối chiếu dòng mã đầu từng prompt với thẻ ảnh tham chiếu — thiếu thì hỏi trước khi chạy
+    const thieu = maThieu(promptLines, refs)
+    if (thieu.length) {
+      const ds = thieu.map((t) => `• Cảnh ${t.canh}: ${t.thieu.map((m) => '@' + m).join(', ')}`).join('\n')
+      if (!window.confirm(`Chưa có ảnh tham chiếu cho mã:\n${ds}\n\nCác cảnh này sẽ thiếu nhân vật/bối cảnh. Vẫn chạy?`)) return
+    }
     try {
       await api('/api/muse/start', {
         prompts: promptLines,
@@ -379,7 +396,7 @@ export default function MuseWorkspace() {
         parallel,
         out_dir: savePath,
         project: active?.name || 'du_an',
-        refs: mode === 't2i' && !refs.length ? [] : refs.map((r) => ({ tag: r.tag, path: r.path })),
+        refs: mode === 't2i' && !refs.length ? [] : refs.map((r) => ({ tag: '@' + maAnh(r.name || r.path), path: r.path })),
         an_chrome: hideChrome,
       })
       setQueueTab('all')
@@ -872,8 +889,27 @@ export default function MuseWorkspace() {
                 {' '}
                 — {logs.length} dòng · {logErrCount} lỗi
               </span>
+              {bridgeVer && <span className="st-ver" title="Phiên bản cầu nối Python đang chạy">cầu nối {bridgeVer}</span>}
             </div>
             <div className="muse-log-actions">
+              <button
+                type="button"
+                className="muse-ghost"
+                title="Chép toàn bộ nhật ký (cũ → mới) để gửi"
+                onClick={() => {
+                  const text = logs
+                    .slice()
+                    .reverse()
+                    .map((l) => `${l.time}  ${l.level}  [${l.tag}]  ${l.msg}`)
+                    .join('\n')
+                  navigator.clipboard
+                    ?.writeText(`cầu nối: ${bridgeVer || '?'}\n${text}`)
+                    .then(() => flash(`Đã chép ${logs.length} dòng nhật ký`))
+                    .catch(() => flash('Không chép được — bấm giữ chọn chữ rồi Ctrl+C'))
+                }}
+              >
+                Copy log
+              </button>
               <button
                 type="button"
                 className="muse-ghost"

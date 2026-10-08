@@ -560,3 +560,5 @@
 .vids-table:not(.st-grid), .muse-table:not(.st-grid) { min-width: 1000px; }
 .st-viewswitch button, .st-save-main, .vids-progress, .muse-progress { white-space: nowrap; }
 .st-save-main b { max-width: 160px; }
+.st-ver { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 6px; font-size: 10.5px;
+  font-family: ui-monospace, Menlo, Consolas, monospace; background: rgba(255,255,255,0.06); color: var(--st-muted); }

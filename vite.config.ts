@@ -697,48 +697,72 @@ function bridgePlugin(): Plugin {
     name: 'pb-python-bridge',
     async configureServer(server) {
       // Cầu nối cũ còn sót lại (đóng app trên Windows hay để lại tiến trình python) mà khác
-      // phiên bản với scripts/pb_bridge.py hiện tại → tắt nó rồi bật bản mới; trước đây dùng
-      // luôn bản cũ nên pull code mới mà phần Python vẫn chạy code cũ.
-      const verMoi = crypto
-        .createHash('sha1')
-        .update(fs.readFileSync(path.join(scriptsDir(), 'pb_bridge.py')))
-        .digest('hex')
-        .slice(0, 12)
-      try {
-        const h = (await (await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/health`)).json()) as { pid?: number; ver?: string }
-        if (h.ver === verMoi) {
-          console.log(`[bridge] đã chạy sẵn ở cổng ${BRIDGE_PORT} (đúng phiên bản)`)
-          return
-        }
-        console.log(`[bridge] cầu nối đang chạy là bản cũ (${h.ver || '?'} ≠ ${verMoi}) — tắt pid ${h.pid} rồi bật bản mới`)
-        if (h.pid) {
-          try {
-            process.kill(h.pid)
-          } catch {
-            /* đã tắt */
-          }
-        }
-        for (let i = 0; i < 20 && (await alive()); i++) await new Promise((r) => setTimeout(r, 250))
-      } catch {
-        /* chưa có cầu nối nào chạy */
-      }
+      // phiên bản với scripts/pb_bridge.py hiện tại → tắt nó rồi bật bản mới. Kiểm tra lúc
+      // khởi động VÀ mỗi 8 giây, nên pull code mới là cầu nối tự lên bản mới, khỏi phải tắt app.
+      const verMoi = () =>
+        crypto
+          .createHash('sha1')
+          .update(fs.readFileSync(path.join(scriptsDir(), 'pb_bridge.py')))
+          .digest('hex')
+          .slice(0, 12)
       const py = findPython()
       if (!py) {
         console.log('[bridge] KHÔNG tìm thấy python — các tab thật sẽ không chạy')
         return
       }
-      child = spawn(py, [path.join(scriptsDir(), 'pb_bridge.py')], {
-        cwd: __viteDir,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PB_BRIDGE_PORT: String(BRIDGE_PORT) },
-        windowsHide: true,
-      })
-      child.stdout?.on('data', (b) => process.stdout.write(`[bridge] ${b}`))
-      child.stderr?.on('data', (b) => process.stdout.write(`[bridge!] ${b}`))
-      child.on('exit', (c) => {
-        console.log(`[bridge] thoát (mã ${c})`)
-        child = null
-      })
+      const bat = () => {
+        child = spawn(py, [path.join(scriptsDir(), 'pb_bridge.py')], {
+          cwd: __viteDir,
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PB_BRIDGE_PORT: String(BRIDGE_PORT) },
+          windowsHide: true,
+        })
+        child.stdout?.on('data', (b) => process.stdout.write(`[bridge] ${b}`))
+        child.stderr?.on('data', (b) => process.stdout.write(`[bridge!] ${b}`))
+        child.on('exit', (c) => {
+          console.log(`[bridge] thoát (mã ${c})`)
+          child = null
+        })
+      }
+      let dangLam = false
+      const damBao = async () => {
+        if (dangLam) return
+        dangLam = true
+        try {
+          const can = verMoi()
+          let h: { pid?: number; ver?: string } | null = null
+          try {
+            h = (await (await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/health`)).json()) as { pid?: number; ver?: string }
+          } catch {
+            h = null
+          }
+          if (h && h.ver === can) return
+          if (h) {
+            console.log(`[bridge] cầu nối đang chạy là bản cũ (${h.ver || '?'} ≠ ${can}) — tắt pid ${h.pid} rồi bật bản mới`)
+            if (h.pid) {
+              try {
+                process.kill(h.pid)
+              } catch {
+                /* đã tắt */
+              }
+            }
+            if (child && child.pid !== h.pid) {
+              try {
+                child.kill()
+              } catch {
+                /* ignore */
+              }
+            }
+            for (let i = 0; i < 20 && (await alive()); i++) await new Promise((r) => setTimeout(r, 250))
+          }
+          if (!(await alive())) bat()
+        } finally {
+          dangLam = false
+        }
+      }
+      await damBao()
+      const hen = setInterval(() => void damBao(), 8000)
       const stop = () => {
+        clearInterval(hen)
         try {
           child?.kill()
         } catch {

@@ -277,13 +277,20 @@ def phien_tk(email: str = "", bo_qua: set | None = None):
 # Mã ảnh tham chiếu trong tên file: NHÓM_số + đuôi biến thể tuỳ chọn.
 #   CHAR_01_O4_lily.png → CHAR_01_O4 · GUEST_01_joe.png → GUEST_01 · BG_05_market.jpg → BG_05
 # (bản cũ chỉ biết CHAR/BG/PROP/ENV/STYLE và cắt mất «_O4» → prompt gọi @CHAR_01_O4 không khớp ảnh nào)
-_MA = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{2,12}_\d{1,3}(?:_[A-Za-z]{1,3}\d{1,3})*(?![0-9])")
+_MA = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{2,12}_\d{1,3}(?:_[A-Za-z0]{1,3}\d{1,3})*(?![0-9])")
+
+
+def chuan_ma(ma: str) -> str:
+    """Gõ nhầm số 0 thay chữ O trong đuôi trang phục: CHAR_02_04 → CHAR_02_O4 (cả tên file lẫn prompt)."""
+    ma = ma.upper()
+    m = re.match(r"^([A-Z]{2,12}_\d{1,3})((?:_[A-Z0]{1,3}\d{1,3})+)$", ma)
+    return m.group(1) + re.sub(r"_0(?=\d)", "_O", m.group(2)) if m else ma
 
 
 def ma_cua_anh(ten_file: str) -> str:
     goc = os.path.splitext(os.path.basename(ten_file))[0]
     m = _MA.search(goc)
-    return (m.group(0) if m else goc).upper()
+    return chuan_ma(m.group(0)) if m else goc.upper()
 
 
 # Dòng mã đầu prompt: «001. @CHAR_01 | @BG_02. A woman…» → [CHAR_01, BG_02]
@@ -297,7 +304,7 @@ def ma_dau_prompt(prompt: str) -> list[str]:
         return []
     ra = []
     for t in re.findall(r"@([\w\-]+)", m.group(1)):
-        t = t.upper()
+        t = chuan_ma(t)
         if t not in ra:
             ra.append(t)
     return ra
