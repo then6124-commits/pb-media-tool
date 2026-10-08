@@ -1,4 +1,4 @@
-import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
+import { OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Ico } from './SettingsPanes'
 import './studio_sv.css'
@@ -504,9 +504,10 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   const loadTxt = (file: File) => {
     const reader = new FileReader()
     reader.onload = () => {
-      const text = String(reader.result || '')
-      setPromptText((prev) => (prev ? prev + '\n' + text : text))
-      flash(`Đã nạp ${file.name}`)
+      const text = cleanPromptFile(String(reader.result || ''))
+      setPromptText((prev) => (prev.trim() ? prev.trimEnd() + '\n\n' + text : text))
+      setCollapsed(false)
+      flash(`Đã nạp ${file.name} · ${splitPrompts(text, false).length} prompt`)
     }
     reader.readAsText(file)
   }
@@ -988,6 +989,14 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
             <div className="st-compose">
             <textarea
               className="vids-textarea"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                const f = e.dataTransfer.files?.[0]
+                if (f) {
+                  e.preventDefault()
+                  loadTxt(f)
+                }
+              }}
               value={promptText}
               onChange={(e) => setPromptText(e.target.value)}
               placeholder={PROMPT_PLACEHOLDER}
@@ -1238,7 +1247,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                       />
                     </td>
                     <td className="vids-num">
-                      {String(r.stt || idx + 1).padStart(2, '0')}
+                      {/^\s*(\d{1,4})\s*[.)\-:]/.exec(r.prompt)?.[1]?.padStart(3, '0') ?? String(r.stt || idx + 1).padStart(2, '0')}
                     </td>
                     <td className="vids-media">
                       {r.status === 'loi' || r.status === 'tu_choi' ? (

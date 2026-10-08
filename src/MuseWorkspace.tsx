@@ -1,4 +1,4 @@
-import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
+import { OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Ico } from './SettingsPanes'
 import './studio_sv.css'
@@ -300,9 +300,10 @@ export default function MuseWorkspace() {
   const loadTxt = (f: File) => {
     const reader = new FileReader()
     reader.onload = () => {
-      setPromptText(String(reader.result || ''))
+      const text = cleanPromptFile(String(reader.result || ''))
+      setPromptText(text)
       setCollapsed(false)
-      flash(`Đã nạp ${f.name}`)
+      flash(`Đã nạp ${f.name} · ${splitPrompts(text, false).length} prompt`)
     }
     reader.readAsText(f)
   }
@@ -527,6 +528,14 @@ export default function MuseWorkspace() {
 
             <div className="st-compose">
             <textarea
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                const f = e.dataTransfer.files?.[0]
+                if (f) {
+                  e.preventDefault()
+                  loadTxt(f)
+                }
+              }}
               className="muse-textarea"
               value={promptText}
               onChange={(e) => setPromptText(e.target.value)}

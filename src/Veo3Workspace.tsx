@@ -1,4 +1,4 @@
-import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
+import { OnePromptCheck, cleanPromptFile, extractPromptBlocks, splitPrompts, useOnePrompt } from './OnePrompt'
 import {
   useCallback,
   useEffect,
@@ -150,6 +150,9 @@ const T2V_PLACEHOLDER = [
 function parseT2VPrompts(text: string): string[] {
   const t = text.trim()
   if (!t) return []
+  // File kịch bản «NNN. @mã …» nhiều dòng → mỗi khối là 1 prompt, bỏ chữ thừa
+  const khoi = extractPromptBlocks(t)
+  if (khoi) return khoi
   if (t.startsWith('{') || t.startsWith('[')) {
     try {
       const v: unknown = JSON.parse(t)
@@ -181,7 +184,7 @@ function statusLabel(s: JobStatus) {
   }
 }
 function countPromptLines(text: string) {
-  return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).length
+  return splitPrompts(text, false).length
 }
 function readPersisted(): Record<string, unknown> {
   try {
@@ -629,10 +632,10 @@ export default function Veo3Workspace() {
     const texts: string[] = []
     for (const f of files) {
       if (!/\.(txt|json|md)$/i.test(f.name) && !f.type.startsWith('text')) continue
-      texts.push(await f.text())
+      texts.push(cleanPromptFile(await f.text()))
     }
     if (!texts.length) { showToast('Không đọc được file TXT/JSON'); return }
-    const merged = texts.join('\n').trim()
+    const merged = texts.join('\n\n').trim()
     setPrompt(merged)
     setPromptFileName(files[0]?.name || 'prompts.txt')
     pushLog(`Đã nạp ${files.length} file prompt · ${countPromptLines(merged)} dòng`)

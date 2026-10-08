@@ -1,4 +1,4 @@
-import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
+import { OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './tao_anh.css'
 import DrawEngineModal, {
@@ -342,8 +342,8 @@ export default function TaoAnhWorkspace() {
     if (!file) return
     const reader = new FileReader()
     reader.onload = () => {
-      const text = String(reader.result || '')
-      setPrompt((prev) => (prev.trim() ? prev.trimEnd() + '\n' + text : text))
+      const text = cleanPromptFile(String(reader.result || ''))
+      setPrompt((prev) => (prev.trim() ? prev.trimEnd() + '\n\n' + text : text))
       flash(`Đã tải ${file.name}`)
     }
     reader.readAsText(file)
