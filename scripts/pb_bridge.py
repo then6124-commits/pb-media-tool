@@ -342,6 +342,24 @@ def tim_nguon(path: str) -> dict | None:
     return r if isinstance(r, dict) and r.get("ma") else None
 
 
+def tach_prompt_ds(ds, parse) -> list:
+    """Danh sách prompt từ giao diện → [(số, prompt)].
+
+    Bình thường nối lại rồi để bộ tách của tool cũ (`parse`) đọc như file txt.
+    Nhưng prompt có XUỐNG DÒNG là do người dùng tick «Cả ô là 1 prompt»: nối
+    bằng "\n" thì bộ tách sẽ cắt nó ra nhiều prompt — nên khi đó giữ nguyên
+    từng khối, chỉ bóc số cảnh nếu prompt mở đầu bằng «001.».
+    """
+    ds = [str(p).strip() for p in (ds or []) if str(p).strip()]
+    if not any("\n" in p for p in ds):
+        return list(parse("\n".join(ds)) or [])
+    ra = []
+    for i, p in enumerate(ds):
+        m = re.match(r"(\d{1,4})\s*[.)\-:]\s+", p)
+        ra.append((m.group(1), p[m.end():].strip()) if m else (str(i + 1), p))
+    return ra
+
+
 class HangVids:
     def __init__(self):
         self.jobs: dict[str, dict] = {}
@@ -766,7 +784,7 @@ class LoFlow:
                     prompts.append((so, (" ".join(tags) + " " + t).strip()))
             else:
                 text = "\n".join(str(p).strip() for p in (d.get("prompts") or []) if str(p).strip())
-                prompts = image_gen.parse_prompt_text(text)
+                prompts = tach_prompt_ds(d.get("prompts"), image_gen.parse_prompt_text)
                 # Prompt không đánh số → đánh tiếp sau số lớn nhất đã có trong
                 # thư mục, kẻo lần chạy sau đè/bỏ qua cảnh 1, 2… lần trước.
                 if prompts and bu and not re.match(r"\d{1,4}\s*[.)\-:]", text.lstrip()[:6]):
@@ -1040,8 +1058,7 @@ class HangMuse:
                                    str(d.get("project") or "du_an")))
         os.makedirs(out_dir, exist_ok=True)
         refs = [r for r in (d.get("refs") or []) if os.path.isfile(str(r.get("path") or ""))]
-        text = "\n".join(str(p).strip() for p in (d.get("prompts") or []) if str(p).strip())
-        canh = mv.tach_prompt_text(text) or []
+        canh = tach_prompt_ds(d.get("prompts"), mv.tach_prompt_text)
         # tach_prompt_text trả [(số, prompt)] — đánh số theo prompt người dùng
         ids = []
         with self.lock:

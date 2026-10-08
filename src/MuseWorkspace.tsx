@@ -1,3 +1,4 @@
+import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Ico } from './SettingsPanes'
 import './studio_sv.css'
@@ -249,6 +250,7 @@ export default function MuseWorkspace() {
   const logErrCount = useMemo(() => logs.filter((l) => l.level === 'LỖI').length, [logs])
 
   const [sortDesc, setSortDesc] = useState(false)
+  const [onePrompt, setOnePrompt] = useOnePrompt('muse')
   const [gridView, setGridView] = useState(false)
   const filteredRows = useMemo(() => {
     let list = sortDesc ? [...rows].reverse() : rows
@@ -260,8 +262,8 @@ export default function MuseWorkspace() {
   }, [rows, queueTab, search, sortDesc])
 
   const promptLines = useMemo(
-    () => promptText.split('\n').map((l) => l.trim()).filter(Boolean),
-    [promptText],
+    () => splitPrompts(promptText, onePrompt),
+    [promptText, onePrompt],
   )
   const promptCount = promptLines.length
   const needRefWarn = mode === 'i2v' && refs.length === 0
@@ -519,6 +521,7 @@ export default function MuseWorkspace() {
                 <button type="button" className="muse-ghost" onClick={() => fileRef.current?.click()}>
                   <Ico n="file" size={13} /> Nạp TXT
                 </button>
+                <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
                 <span className="muse-ghost muted st-count">{promptCount} job</span>
                 <button type="button" className="muse-ghost" onClick={() => setCollapsed(true)}>
                   <Ico n="arrowup" size={12} /> Thu gọn

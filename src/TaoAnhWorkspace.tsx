@@ -1,3 +1,4 @@
+import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './tao_anh.css'
 import DrawEngineModal, {
@@ -122,19 +123,13 @@ function saveJson(key: string, val: unknown) {
   }
 }
 
-function parsePrompts(raw: string): string[] {
-  return raw
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-}
-
 function snippet(text: string, n = 48) {
   const one = text.replace(/\s+/g, ' ').trim()
   return one.length <= n ? one : one.slice(0, n - 1) + '…'
 }
 
 export default function TaoAnhWorkspace() {
+  const [onePrompt, setOnePrompt] = useOnePrompt('taoanh')
   const [model, setModel] = useState<ModelId>(() => {
     const v = loadStr(LS_MODEL, 'Banana 2')
     return (MODELS.includes(v as ModelId) ? v : 'Banana 2') as ModelId
@@ -173,7 +168,7 @@ export default function TaoAnhWorkspace() {
   const nextRef = useRef(1)
   const logSince = useRef(0)
 
-  const promptLines = useMemo(() => parsePrompts(prompt), [prompt])
+  const promptLines = useMemo(() => splitPrompts(prompt, onePrompt), [prompt, onePrompt])
   const waitCount = queue.filter((q) => q.status === 'wait').length
   const errCount = queue.filter((q) => q.status === 'error').length
   const refCount = refs.length
@@ -264,7 +259,7 @@ export default function TaoAnhWorkspace() {
   }
 
   function addToQueue() {
-    const lines = parsePrompts(prompt)
+    const lines = splitPrompts(prompt, onePrompt)
     if (!lines.length) {
       flash('Nhập ít nhất 1 prompt (mỗi dòng một prompt)')
       return
@@ -530,6 +525,7 @@ export default function TaoAnhWorkspace() {
             <span className="ta-prompt-count" title="Số dòng prompt">
               {promptLines.length} prompts
             </span>
+            <OnePromptCheck on={onePrompt} setOn={setOnePrompt} className="ta-one-prompt" />
             <textarea
               className="ta-prompt"
               value={prompt}

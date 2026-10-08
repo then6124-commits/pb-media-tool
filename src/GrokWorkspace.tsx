@@ -1,3 +1,4 @@
+import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useState } from 'react'
 import { api, baseName, type BridgeJob, dirName, errText, fileUrl, openFolder, pickFiles as pickPaths, pickFolder, useJobs } from './bridge'
 
@@ -104,6 +105,7 @@ export default function GrokWorkspace() {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [results, setResults] = useState<ResultItem[]>([])
   const [selectedResults, setSelectedResults] = useState<number[]>([])
+  const [onePrompt, setOnePrompt] = useOnePrompt('grok')
   const [midCollapsed, setMidCollapsed] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [profiles, setProfiles] = useState<ProfileRow[]>([])
@@ -168,14 +170,7 @@ export default function GrokWorkspace() {
   const activeProfile = profiles.find((p) => p.id === profileId) || profiles[0]
   const profileName = activeProfile?.name || '(chưa có profile)'
 
-  const promptLines = useMemo(
-    () =>
-      prompt
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean),
-    [prompt],
-  )
+  const promptLines = useMemo(() => splitPrompts(prompt, onePrompt), [prompt, onePrompt])
 
   const segmentCount = steps.filter((s) => s.prompt.trim()).length
   const totalSeconds = segmentCount * (duration === '10s' ? 10 : 6)
@@ -628,6 +623,9 @@ export default function GrokWorkspace() {
               </div>
             )}
 
+            <div className="one-prompt-row">
+              <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
+            </div>
             {mode === 'Text to Video' && (
               <textarea
                 className="grok-prompt"

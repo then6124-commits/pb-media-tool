@@ -6104,3 +6104,16 @@ td.clip {
 .flow-node-err { color: #f87171; font-size: 11.5px; margin-top: 4px; overflow-wrap: anywhere; }
 .flow-gen:disabled { opacity: .5; cursor: wait; }
 textarea.flow-frame-box { width: 100%; resize: vertical; color: inherit; font: inherit; }
+
+/* Ô tick «Cả ô là 1 prompt» — dùng chung mọi tab */
+.one-prompt {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  font-size: 12px; font-weight: 600; cursor: pointer; user-select: none;
+  padding: 4px 10px; border-radius: 8px; border: 1px solid rgba(148,163,184,0.35);
+  color: inherit; opacity: 0.85;
+}
+.one-prompt input { margin: 0; cursor: pointer; accent-color: #22c55e; }
+.one-prompt.on { opacity: 1; border-color: rgba(34,197,94,0.6); background: rgba(34,197,94,0.12); color: #22c55e; }
+.one-prompt-row { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin: 6px 0; }
+.va-card-title .one-prompt-right { float: right; margin-top: -3px; }
+.ta-prompt-wrap .ta-one-prompt { position: absolute; top: 8px; right: 96px; z-index: 2; background: rgba(15,23,42,0.6); }

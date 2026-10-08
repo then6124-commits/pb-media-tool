@@ -1,3 +1,4 @@
+import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
 import {
   useCallback,
   useEffect,
@@ -327,14 +328,18 @@ export default function Veo3Workspace() {
   const ingSlotRef = useRef<HTMLInputElement | null>(null)
   const ingSlotTarget = useRef<{ ingId: string; slot: number } | null>(null)
 
-  const t2vTextPrompts = useMemo(() => parseT2VPrompts(prompt), [prompt])
+  const [onePrompt, setOnePrompt] = useOnePrompt('veo3')
+  const t2vTextPrompts = useMemo(
+    () => (onePrompt ? splitPrompts(prompt, true) : parseT2VPrompts(prompt)),
+    [prompt, onePrompt],
+  )
   const t2vAllPrompts = useMemo(
     () => (t2vFiles.length ? t2vFiles.flatMap((f) => f.prompts) : t2vTextPrompts),
     [t2vFiles, t2vTextPrompts],
   )
   const promptCount = t2vAllPrompts.length
   const t2vRatio: string = (T2V_RATIOS as readonly string[]).includes(ratio) ? ratio : '9:16'
-  const charPromptCount = useMemo(() => countPromptLines(charPrompt), [charPrompt])
+  const charPromptCount = useMemo(() => splitPrompts(charPrompt, onePrompt).length, [charPrompt, onePrompt])
   const v2vPromptCount = useMemo(() => v2vPrompts.filter((p) => p.trim()).length, [v2vPrompts])
   const totalIngImages = useMemo(
     () => ingredients.reduce((n, i) => n + i.images.length, 0),
@@ -530,7 +535,7 @@ export default function Veo3Workspace() {
         body = {
           ...base,
           mode: 'chars',
-          prompts: charPrompt.split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
+          prompts: splitPrompts(charPrompt, onePrompt),
           refs,
         }
       } else if (mode === 'video' || mode === 'omni') {
@@ -1062,6 +1067,7 @@ export default function Veo3Workspace() {
             </select>
             <span className="t2v-chev" aria-hidden>▾</span>
           </div>
+          {t2vFiles.length === 0 && <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />}
           <span className="t2v-count" title={promptFileName ?? undefined}>
             {promptCount} prompt{promptCount !== 1 ? 's' : ''}
           </span>
@@ -1552,6 +1558,9 @@ export default function Veo3Workspace() {
               const item = filesToItems([files[0]], 'image')[0]
               setChars((list) => list.map((x) => (x.id === id ? { ...x, image: item } : x)))
             }} />
+            <div className="one-prompt-row">
+              <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
+            </div>
             <textarea className="veo-prompt tall"
               placeholder="Mỗi dòng = 1 video. Ví dụ: Tạo video @nhanvat1 đang chiến đấu với @nhanvat2 trên đấu trường..."
               value={charPrompt} onChange={(e) => setCharPrompt(e.target.value)} />

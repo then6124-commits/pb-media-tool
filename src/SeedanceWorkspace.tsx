@@ -1,3 +1,4 @@
+import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useState } from 'react'
 import { api, baseName, type BridgeJob, dirName, errText, fileUrl, openFolder, pickFiles, useJobs } from './bridge'
 import './mini.css'
@@ -37,6 +38,7 @@ function saveStr(key: string, val: string) {
 }
 
 export default function SeedanceWorkspace() {
+  const [onePrompt, setOnePrompt] = useOnePrompt('seedance')
   const [cfg, setCfg] = useState<SdCfg | null>(null)
   const [cfgOpen, setCfgOpen] = useState(false)
   const [keyIn, setKeyIn] = useState('')
@@ -120,10 +122,7 @@ export default function SeedanceWorkspace() {
     }
   }
 
-  const lines = prompts
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
+  const lines = splitPrompts(prompts, onePrompt)
 
   function buildItems(): SdItem[] {
     const base = Date.now()
@@ -337,6 +336,7 @@ export default function SeedanceWorkspace() {
           <section className="va-card">
             <div className="va-card-title">
               {mode === 't2v' ? 'Prompt — mỗi dòng một video' : 'Prompt chuyển động — dòng i dùng cho ảnh i (lặp lại nếu ít dòng hơn)'}
+              <OnePromptCheck on={onePrompt} setOn={setOnePrompt} className="one-prompt-right" />
             </div>
             <textarea
               className="rw-textarea sp"

@@ -1,3 +1,4 @@
+import { OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Ico } from './SettingsPanes'
 import './studio_sv.css'
@@ -152,6 +153,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
     return v ?? defaultProjects()[0].id
   })
   const [rows, setRows] = useState<QueueRow[]>([])
+  const [onePrompt, setOnePrompt] = useOnePrompt('vids')
   const [promptText, setPromptText] = useState(() => {
     try {
       return localStorage.getItem(LS_PROMPT) || ''
@@ -351,6 +353,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   const parsePrompts = (text: string): string[] => {
     const joined = text.trim()
     if (!joined) return []
+    if (onePrompt) return [joined]
     if (joined.startsWith('[') || joined.startsWith('{')) {
       try {
         const parsed = JSON.parse(joined)
@@ -362,10 +365,10 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
         /* fallthrough */
       }
     }
-    return joined.split('\n').map((l) => l.trim()).filter(Boolean)
+    return splitPrompts(joined, false)
   }
 
-  const promptCount = useMemo(() => parsePrompts(promptText).length, [promptText])
+  const promptCount = useMemo(() => parsePrompts(promptText).length, [promptText, onePrompt])
 
   const flash = (msg: string) => setToast(msg)
 
@@ -896,6 +899,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                 >
                   <Ico n="file" size={13} /> Nạp TXT
                 </button>
+                <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
                 <span className="vids-ghost muted st-count">{promptCount} prompt</span>
                 <button
                   type="button"
