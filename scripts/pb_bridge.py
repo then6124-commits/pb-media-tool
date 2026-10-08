@@ -2845,8 +2845,12 @@ def grok_profiles(ds: list | None = None) -> list[dict]:
 
 def _che(p: dict) -> dict:
     k = str(p.get("key") or "")
-    return {**{x: y for x, y in p.items() if x != "key"},
-            "slug": (k[:8] + "…" + k[-4:]) if len(k) > 14 else "…"}
+    if p.get("type") == "web":
+        n = len([x for x in k.split(";") if "=" in x])
+        slug = "cookie · %d mục" % n
+    else:
+        slug = (k[:8] + "…" + k[-4:]) if len(k) > 14 else "…"
+    return {**{x: y for x, y in p.items() if x != "key"}, "slug": slug}
 
 
 def grok_profile_viec(d: dict) -> list[dict]:
@@ -2862,6 +2866,25 @@ def grok_profile_viec(d: dict) -> list[dict]:
             moi.append({"id": int(time.time() * 1000) + len(moi), "name": ten.strip() or "Profile %d" % (len(ds) + len(moi) + 1),
                         "key": key.strip(), "status": "untested", "created": time.strftime("%H:%M:%S %d/%m/%Y")})
         ds += moi
+    elif viec == "add_web":
+        # Tài khoản grok.com: cookie đăng nhập (mỗi dòng «tên|cookie» hoặc chỉ cookie).
+        moi = []
+        for dong in str(d.get("cookies") or "").splitlines():
+            dong = dong.strip()
+            if not dong:
+                continue
+            ten, _, ck = dong.partition("|") if "|" in dong.split("=", 1)[0] else ("", "", dong)
+            ck = ck.strip()
+            if ck.lower().startswith("cookie:"):
+                ck = ck[7:].strip()
+            ten_ck = {x.split("=", 1)[0].strip() for x in ck.split(";") if "=" in x}
+            moi.append({"id": int(time.time() * 1000) + len(moi), "type": "web",
+                        "name": ten.strip() or "grok.com %d" % (len(ds) + len(moi) + 1),
+                        "key": ck, "status": "valid" if ten_ck & {"sso", "sso-rw"} else "untested",
+                        "created": time.strftime("%H:%M:%S %d/%m/%Y")})
+        if not moi:
+            raise RuntimeError("Chưa dán cookie grok.com")
+        ds += moi
     elif viec == "delete":
         bo = set(d.get("ids") or [])
         ds = [p for p in ds if p.get("id") not in bo]
@@ -2872,7 +2895,10 @@ def grok_profile_viec(d: dict) -> list[dict]:
     elif viec == "test":
         bo = set(d.get("ids") or [p.get("id") for p in ds])
         for p in ds:
-            if p.get("id") in bo:
+            if p.get("id") in bo and p.get("type") == "web":
+                ten_ck = {x.split("=", 1)[0].strip() for x in str(p.get("key") or "").split(";") if "=" in x}
+                p["status"] = "valid" if ten_ck & {"sso", "sso-rw"} else "invalid"
+            elif p.get("id") in bo:
                 ma, _raw = _http_json(XAI + "/api-key", None, {"Authorization": "Bearer " + p["key"]}, timeout=30)
                 p["status"] = "valid" if ma == 200 else "invalid"
     if viec != "list":
@@ -2941,6 +2967,9 @@ def grok_chay(d: dict) -> dict:
     p = ds_p.get(d.get("profile_id")) or next(iter(ds_p.values()), None)
     if not p:
         raise RuntimeError("Chưa có profile (xAI API key) — vào «Profiles» › + Thêm")
+    if p.get("type") == "web":
+        raise RuntimeError("Tạo video bằng tài khoản grok.com chưa nối: cần lệnh tạo video của grok.com "
+                           "(bắt bằng F12 › Network trên grok.com/imagine). Tạm thời chọn profile xAI API key.")
     key = p["key"]
     items = [{"id": x.get("id"), "prompt": str(x.get("prompt") or "").strip(), "image": str(x.get("image") or ""),
               "refs": [r for r in x.get("refs") or [] if os.path.isfile(r)], "steps": list(x.get("steps") or []),

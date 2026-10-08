@@ -43,7 +43,7 @@ type ProfileRow = {
   selected: boolean
 }
 
-type BridgeProfile = { id: number; name: string; slug: string; status: ProfileRow['status']; created: string }
+type BridgeProfile = { id: number; name: string; slug: string; status: ProfileRow['status']; created: string; type?: string }
 
 function toRows(ds: BridgeProfile[], prev: ProfileRow[]): ProfileRow[] {
   return ds.map((p) => ({
@@ -51,7 +51,7 @@ function toRows(ds: BridgeProfile[], prev: ProfileRow[]): ProfileRow[] {
     name: p.name,
     slug: p.slug,
     status: p.status,
-    addon: 'xAI API',
+    addon: p.type === 'web' ? 'grok.com' : 'xAI API',
     createdAt: p.created,
     selected: prev.find((x) => x.id === p.id)?.selected || false,
   }))
@@ -114,7 +114,9 @@ export default function GrokWorkspace() {
   const [jobIds, setJobIds] = useState<string[]>([])
   const jobs = useJobs(['grok'])
   const [addOpen, setAddOpen] = useState(false)
-  const [addTab, setAddTab] = useState<'manual' | 'batch'>('manual')
+  const [addTab, setAddTab] = useState<'web' | 'manual' | 'batch'>('web')
+  const [webName, setWebName] = useState('')
+  const [webCookie, setWebCookie] = useState('')
   const [batchText, setBatchText] = useState('')
   const [consoleOpen, setConsoleOpen] = useState(false)
   const [logs, setLogs] = useState<string[]>(['Grok Studio sẵn sàng — xAI API'])
@@ -466,6 +468,20 @@ export default function GrokWorkspace() {
     }
   }
 
+  async function addWebAccount() {
+    if (!webCookie.trim()) {
+      flash('Dán cookie grok.com')
+      return
+    }
+    const line = webCookie.trim().replace(/\r?\n/g, ' ')
+    if (await profileAction({ action: 'add_web', cookies: webName.trim() ? `${webName.trim()}|${line}` : line })) {
+      setWebCookie('')
+      setWebName('')
+      setAddOpen(false)
+      flash('Đã thêm tài khoản grok.com')
+    }
+  }
+
   async function addBatchProfiles() {
     if (!batchText.trim()) {
       flash('Dán danh sách key (mỗi dòng: tên|key hoặc chỉ key)')
@@ -521,7 +537,7 @@ export default function GrokWorkspace() {
             &gt;_
           </button>
           <button type="button" className="grok-add-profile" onClick={() => setAddOpen(true)}>
-            <span className="grok-plus">+</span> Thêm profile
+            <span className="grok-plus">+</span> Thêm tài khoản
           </button>
         </div>
       </div>
@@ -961,12 +977,16 @@ export default function GrokWorkspace() {
                     <td>
                       <span className={`grok-status-dot ${p.status === 'valid' ? 'ok' : p.status === 'invalid' ? 'bad' : 'run'}`} />
                       {p.status === 'valid'
-                        ? 'Hợp lệ'
+                        ? p.addon === 'grok.com'
+                          ? 'Có cookie sso'
+                          : 'Hợp lệ'
                         : p.status === 'testing'
                           ? 'Đang test'
                           : p.status === 'untested'
                             ? 'Chưa test'
-                            : 'Không hợp lệ'}
+                            : p.addon === 'grok.com'
+                              ? 'Thiếu cookie sso'
+                              : 'Không hợp lệ'}
                     </td>
                     <td>
                       <span className="grok-addon">{p.addon}</span>
@@ -1019,28 +1039,53 @@ export default function GrokWorkspace() {
         <div className="grok-modal-backdrop" onClick={() => setAddOpen(false)}>
           <div className="grok-modal" onClick={(e) => e.stopPropagation()}>
             <div className="grok-modal-head">
-              <h3>Thêm Profile</h3>
+              <h3>Thêm tài khoản</h3>
               <button type="button" onClick={() => setAddOpen(false)}>
                 ×
               </button>
             </div>
             <div className="grok-modal-tabs">
+              <button type="button" className={addTab === 'web' ? 'on' : ''} onClick={() => setAddTab('web')}>
+                Tài khoản grok.com
+              </button>
               <button
                 type="button"
                 className={addTab === 'manual' ? 'on' : ''}
                 onClick={() => setAddTab('manual')}
               >
-                Thủ công
+                xAI API key
               </button>
               <button
                 type="button"
                 className={addTab === 'batch' ? 'on' : ''}
                 onClick={() => setAddTab('batch')}
               >
-                Auto Batch
+                API key hàng loạt
               </button>
             </div>
-            {addTab === 'manual' ? (
+            {addTab === 'web' ? (
+              <div className="grok-batch-box">
+                <p className="grok-hint">
+                  Cách lấy cookie: đăng nhập <b>grok.com</b> trên Chrome → F12 → tab <b>Network</b> → tải lại trang → bấm
+                  một request tới grok.com → mục <b>Request Headers</b> → chép nguyên dòng <b>cookie</b> dán vào đây.
+                  Cookie phải có <code>sso</code>.
+                </p>
+                <input
+                  className="grok-key-input"
+                  placeholder="Tên tài khoản (vd email) — tuỳ chọn"
+                  value={webName}
+                  onChange={(e) => setWebName(e.target.value)}
+                />
+                <textarea
+                  value={webCookie}
+                  onChange={(e) => setWebCookie(e.target.value)}
+                  placeholder="sso=…; sso-rw=…; …"
+                />
+                <button type="button" className="grok-btn-dark wide" onClick={() => void addWebAccount()}>
+                  Thêm tài khoản
+                </button>
+              </div>
+            ) : addTab === 'manual' ? (
               <div className="grok-batch-box">
                 <p className="grok-hint">Mỗi profile là một xAI API key — tạo ở console.x.ai › API Keys.</p>
                 <input
