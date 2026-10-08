@@ -8,6 +8,7 @@ import {
   type DragEvent,
   type MutableRefObject,
 } from 'react'
+import { errText, pickFolder, waitJob } from './bridge'
 import './t2v.css'
 
 type VeoMode = 'text' | 'image' | 'ingredients' | 'video' | 'omni' | 'script'
@@ -34,6 +35,7 @@ type ScriptProject = {
   script: string
   durationSec: number
   createdAt: number
+  link?: string
 }
 type VeoJob = {
   id: string
@@ -251,7 +253,8 @@ export default function Veo3Workspace() {
   const [t2vLogAll, setT2vLogAll] = useState(false)
   const [view, setView] = useState<ViewMode>((saved.view as ViewMode) || 'grid2')
   const [logOpen, setLogOpen] = useState(saved.logOpen !== false)
-  const [logs, setLogs] = useState<string[]>(['Sẵn sàng — mọi mode chạy thật qua tool Python, trừ Script To Video (giả lập)'])
+  const [logs, setLogs] = useState<string[]>(['Sẵn sàng — mọi mode chạy thật qua tool Python'])
+  const [scriptBusy, setScriptBusy] = useState(false)
   const [ingTab, setIngTab] = useState<IngTab>((saved.ingTab as IngTab) || 'ingredients')
   const [ingredients, setIngredients] = useState<Ingredient[]>([
     { id: uid('ing'), prompt: '', images: [] },
@@ -481,65 +484,6 @@ export default function Veo3Workspace() {
     return false
   })()
 
-  function buildJobsFromMode(): VeoJob[] {
-    const now = Date.now()
-    if (mode === 'text') {
-      const src: { line: string; fileId?: string }[] = t2vFiles.length
-        ? t2vFiles.flatMap((f) => f.prompts.map((line) => ({ line, fileId: f.id })))
-        : t2vTextPrompts.map((line) => ({ line }))
-      return src.slice(0, 200).map((it, i) => ({
-        id: uid('job'), title: `T2V #${i + 1}`, prompt: it.line, mode, ratio: t2vRatio,
-        status: 'cho' as const, progress: 0, createdAt: now + i, fileId: it.fileId,
-      }))
-    }
-    if (mode === 'image') {
-      return images.map((img, i) => ({
-        id: uid('job'),
-        title: img.name,
-        prompt: img.prompt.trim() || `Image→Video · ${img.name}${img.endFrame ? ' · EndFrame' : ''}`,
-        mode, ratio,
-        status: 'cho' as const, progress: 0, createdAt: now + i,
-      }))
-    }
-    if (mode === 'ingredients' && ingTab === 'character') {
-      return charPrompt.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line, i) => ({
-        id: uid('job'), title: `Char #${i + 1}`, prompt: line, mode, ratio,
-        status: 'cho' as const, progress: 0, createdAt: now + i,
-      }))
-    }
-    if (mode === 'ingredients') {
-      return ingredients.map((ing, i) => ({
-        id: uid('job'), title: `Ingredient ${i + 1}`,
-        prompt: ing.prompt || `(ingredient ${i + 1} · ${ing.images.length} ảnh)`,
-        mode, ratio, status: 'cho' as const, progress: 0, createdAt: now + i,
-      }))
-    }
-    if (mode === 'video') {
-      return v2vPrompts.filter((p) => p.trim()).map((p, i) => ({
-        id: uid('job'), title: `V2V #${i + 1}`, prompt: p, mode, ratio,
-        status: 'cho' as const, progress: 0, createdAt: now + i,
-      }))
-    }
-    if (mode === 'omni') {
-      const intentLabel = OMNI_INTENTS.find((x) => x.id === omniIntent)?.label || omniIntent
-      return v2vPrompts.filter((p) => p.trim()).map((p, i) => ({
-        id: uid('job'),
-        title: `Omni · ${intentLabel} #${i + 1}`,
-        prompt: `[${intentLabel}] ${p}${style !== 'Default' ? ` · style:${style}` : ''}`,
-        mode, ratio, status: 'cho' as const, progress: 0, createdAt: now + i,
-      }))
-    }
-    if (mode === 'script' && activeProject) {
-      const scenes = Math.min(12, Math.max(1, Math.ceil(activeProject.durationSec / 8)))
-      return Array.from({ length: scenes }, (_, i) => ({
-        id: uid('job'), title: `${activeProject.title} · cảnh ${i + 1}`,
-        prompt: activeProject.script.slice(0, 120) || activeProject.title,
-        mode, ratio, status: 'cho' as const, progress: 0, createdAt: now + i,
-      }))
-    }
-    return []
-  }
-
   async function startTextReal(prompts: string[]) {
     try {
       const r = await api<{ n: number; out_dir: string }>('/api/flow/start?kind=veo3', {
@@ -657,26 +601,39 @@ export default function Veo3Workspace() {
       void startModeReal()
       return
     }
-    if (!canStart || running) return
-    showToast(`${MODE_LABEL[mode]} cần AI viết kịch bản — chưa nối, đang chạy giả lập`)
-    const created = buildJobsFromMode()
-    if (!created.length) { showToast('Không có job nào để tạo'); return }
-    setJobs((prev) => [...created, ...prev])
-    setRunning(true)
-    pushLog(`Bắt đầu giả lập ${MODE_LABEL[mode]} · ${created.length} job · ${ratio}`)
-    showToast(`Đã thêm ${created.length} job vào hàng đợi`)
+    if (!canStart || !activeProject || scriptBusy || bridgeRunning) return
+    void startScriptReal(activeProject)
+  }
+
+  /** Script To Video: Gemini chia dự án thành prompt từng cảnh 8s → gửi Veo3 T2V như mode Text. */
+  async function startScriptReal(proj: ScriptProject) {
+    setScriptBusy(true)
+    pushLog(`🎬 ${proj.title}: Gemini đang chia cảnh…`)
+    try {
+      const r = await api<{ id: string }>('/api/veo3/script', {
+        title: proj.title,
+        source: proj.source,
+        script: proj.script,
+        link: proj.link,
+        style: proj.style,
+        durationSec: proj.durationSec,
+        ratio,
+      })
+      const j = await waitJob(r.id)
+      const prompts = ((j as unknown as { result?: { prompts: string[] } }).result?.prompts || []).slice(0, 200)
+      if (!prompts.length) throw new Error('Không có prompt nào')
+      pushLog(`✅ ${prompts.length} cảnh — gửi Veo3`)
+      await startTextReal(prompts)
+    } catch (e) {
+      showToast(errText(e))
+      pushLog(`❌ ${errText(e)}`)
+    } finally {
+      setScriptBusy(false)
+    }
   }
   function handleStop() {
-    if (mode !== 'script') {
-      api('/api/flow/stop', {}).catch(() => {})
-      pushLog('⏹ Đã bấm Dừng')
-      return
-    }
-    setRunning(false)
-    setJobs((prev) => prev.map((j) =>
-      j.status === 'dang_chay' || j.status === 'cho' ? { ...j, status: 'loi' as const } : j,
-    ))
-    pushLog('Đã dừng batch (mock)')
+    api('/api/flow/stop', {}).catch(() => {})
+    pushLog('⏹ Đã bấm Dừng')
   }
   async function ingestTxtFiles(files: File[]) {
     const texts: string[] = []
@@ -868,16 +825,16 @@ export default function Veo3Workspace() {
   }
   function createProjectFromModal() {
     const ideaTotalSec = ideaMinutes * 60 + ideaSeconds
-    let title = 'Dự án mới'; let script = ''; let durationSec = 30
+    let title = 'Dự án mới'; let script = ''; let durationSec = 30; let link = ''
     if (projectTab === 'sync') {
       title = `Character Sync · ${new Date().toLocaleString('vi-VN')}`
       script = syncScript; durationSec = Number(syncDuration) || 30
     } else if (projectTab === 'youtube') {
       title = `YouTube · ${ytLink.slice(0, 40) || 'link'}`
-      script = `Phân tích (mock): ${ytLink}\nStyle: ${style}`; durationSec = 48
+      script = ''; link = ytLink.trim(); durationSec = 48
     } else if (projectTab === 'tiktok') {
       title = `TikTok · ${ttLink.slice(0, 40) || 'link'}`
-      script = `Phân tích (mock): ${ttLink}\nStyle: ${style}`; durationSec = 32
+      script = ''; link = ttLink.trim(); durationSec = 32
     } else if (projectTab === 'upload') {
       title = uploadScriptName || 'Upload kịch bản'
       script = uploadScriptBody || customPrompt; durationSec = 40
@@ -888,13 +845,13 @@ export default function Veo3Workspace() {
     const proj: ScriptProject = {
       id: uid('proj'), title, source: projectTab, style,
       script: script + (customPrompt ? `\n\n[Custom]\n${customPrompt}` : ''),
-      durationSec, createdAt: Date.now(),
+      durationSec, createdAt: Date.now(), link: link || undefined,
     }
     setProjects((p) => [proj, ...p])
     setActiveProjectId(proj.id)
     setProjectOpen(false)
     pushLog(`Đã tạo dự án: ${proj.title}`)
-    showToast('Đã tạo dự án (mock)')
+    showToast('Đã tạo dự án — bấm bắt đầu để Gemini chia cảnh và gửi Veo3')
   }
 
   const ideaTotalSec = ideaMinutes * 60 + ideaSeconds
@@ -939,7 +896,7 @@ export default function Veo3Workspace() {
   function CommonFooter({ disabled, label, logFirst, hideStatus }: {
     disabled?: boolean; label: string; logFirst?: boolean; hideStatus?: boolean
   }) {
-    const dangChay = mode === 'script' ? running : bridgeRunning
+    const dangChay = mode === 'script' ? scriptBusy || bridgeRunning : bridgeRunning
     const startBtn = !dangChay ? (
       <button type="button" className={`veo-start ${disabled ? 'disabled' : ''}`}
         disabled={disabled} onClick={handleStart}>
@@ -1044,7 +1001,7 @@ export default function Veo3Workspace() {
     )
   }
 
-  /* ===== Text To Video — bố cục theo SuperVeo (mock) ===== */
+  /* ===== Text To Video — bố cục theo SuperVeo ===== */
   async function t2vAddFiles(files: File[]) {
     const added: T2VFile[] = []
     for (const f of files) {
@@ -1794,7 +1751,7 @@ export default function Veo3Workspace() {
           : `No video · ${v2vPromptCount} prompts`} />
         <div className="veo-omni hero">
           <div className="veo-omni-title">Model: Omni (abra_edit)</div>
-          <div className="veo-omni-sub">Video editing &amp; style transfer — khóa model Omni (mock)</div>
+          <div className="veo-omni-sub">Video editing &amp; style transfer — khóa model Omni</div>
         </div>
         <div className="veo-section-label">Video nguồn <span className="req">*</span> (bắt buộc)</div>
         <div className={`veo-v2v-drop ${sourceVideo ? '' : 'need'}`}
@@ -1980,7 +1937,7 @@ export default function Veo3Workspace() {
             <input className="veo-path-input" placeholder="Chọn thư mục lưu video..." value={outDir}
               onChange={(e) => setOutDir(e.target.value)} />
             <button type="button" className="veo-path-btn" onClick={() => {
-              setOutDir(outDir || 'C:\\Users\\Admin\\Videos\\PB_MEDIA'); showToast('Thư mục lưu (mock)')
+              pickFolder(outDir).then((d) => d && setOutDir(d)).catch((e) => showToast(errText(e)))
             }}>📁</button>
           </div>
         </div>
@@ -2126,7 +2083,7 @@ export default function Veo3Workspace() {
             {projectTab === 'ideas' && (
               <>
                 <div className="veo-section-label">Ý tưởng &amp; Kịch bản</div>
-                <textarea className="veo-modal-textarea tall" placeholder="Mô tả ý tưởng hoặc dán kịch bản ngắn… (mock)"
+                <textarea className="veo-modal-textarea tall" placeholder="Mô tả ý tưởng hoặc dán kịch bản ngắn…"
                   value={ideaText} onChange={(e) => setIdeaText(e.target.value)} />
                 <div className="veo-section-label">Thời lượng</div>
                 <div className="veo-idea-presets">
@@ -2160,7 +2117,7 @@ export default function Veo3Workspace() {
             )}
             <details className="veo-custom-prompt">
               <summary>Custom Prompt <span className="muted">· Tùy chọn</span></summary>
-              <textarea className="veo-modal-textarea" placeholder="Prompt tùy chỉnh thêm (mock)…"
+              <textarea className="veo-modal-textarea" placeholder="Prompt tùy chỉnh thêm…"
                 value={customPrompt} onChange={(e) => setCustomPrompt(e.target.value)} />
             </details>
           </div>
@@ -2288,7 +2245,7 @@ export default function Veo3Workspace() {
               <div className="veo-empty-ico" aria-hidden>▶</div>
               <div className="veo-empty-title">Chưa có video</div>
               <div className="veo-empty-sub">
-                Hàng đợi trống — chọn mode <b>{MODE_LABEL[mode]}</b> rồi bấm bắt đầu{mode === 'script' ? ' (giả lập)' : ''}
+                Hàng đợi trống — chọn mode <b>{MODE_LABEL[mode]}</b> rồi bấm bắt đầu
               </div>
             </div>
           ) : (

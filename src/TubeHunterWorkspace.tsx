@@ -552,7 +552,7 @@ export default function TubeHunterWorkspace() {
         </div>
 
         {toast && <div className="th-toast">{toast}</div>}
-        <div className="th-footnote">Mock UI · chưa nối YouTube API / cookie thật</div>
+        <div className="th-footnote">Tìm qua yt-dlp (không cần API key) · tải video về Videos\\PB_MEDIA\\Tai_ve</div>
       </section>
     </div>
   )

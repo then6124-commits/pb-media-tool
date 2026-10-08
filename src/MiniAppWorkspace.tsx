@@ -1,6 +1,6 @@
 import DrawEngineModal, { DEFAULT_DRAW_CONFIG, type DrawEngineConfig } from './DrawEngineModal'
 import { useEffect, useState } from 'react'
-import { api, baseName, type BridgeJob, downloadText, errText, useJobs } from './bridge'
+import { api, baseName, type BridgeJob, downloadText, errText, pickFiles, useJobs, waitJob } from './bridge'
 import './mini.css'
 
 type AppId =
@@ -202,6 +202,13 @@ function saveStr(key: string, val: string) {
 
 // Thẻ đã nối cầu nối thật (scripts/pb_bridge.py · /api/mini/*). Thẻ khác vẫn là mock.
 const LIVE = new Set<AppId>([
+  'stock',
+  'fashion',
+  'wm-vid',
+  'wm-gem',
+  'av-srt',
+  'va-prompt',
+  'batch-edit',
   'cut-img',
   'cut-vid',
   'upscale',
@@ -291,7 +298,7 @@ function FilePicker({
   outDir,
   setOutDir,
 }: {
-  kind: 'video' | 'anh'
+  kind: string
   label: string
   paths: string[]
   setPaths: (p: string[]) => void
@@ -302,8 +309,8 @@ function FilePicker({
   async function pick() {
     setErr('')
     try {
-      const r = await api<{ paths: string[] }>('/api/pick-files', { kind })
-      if (r.paths.length) setPaths(r.paths)
+      const ps = await pickFiles(kind, true)
+      if (ps.length) setPaths(ps)
     } catch (e) {
       setErr(errText(e))
     }
@@ -367,7 +374,16 @@ function FileJobTool({ app, card, onBack }: { app: AppId; card: MiniCard; onBack
   const [limit, setLimit] = useState(0)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [srtLang, setSrtLang] = useState('')
+  const [wmMode, setWmMode] = useState(() => loadStr('pb.mini.wm.mode', 'delogo'))
+  const [box, setBox] = useState(() =>
+    app === 'wm-gem' ? { x: 88, y: 88, w: 10, h: 10 } : { x: 80, y: 85, w: 18, h: 12 },
+  )
+  const [wmFull, setWmFull] = useState(false)
+  const [preset, setPreset] = useState(() => loadStr('pb.mini.edit.preset', 'logo'))
+  const [custom, setCustom] = useState('')
   const jobs = useJobs([`mini-${app}`])
+  const pickKind = isVideo || app === 'wm-vid' ? 'video' : app === 'av-srt' ? '' : 'anh'
 
   useEffect(() => {
     saveStr(`pb.mini.${app}.out`, outDir)
@@ -375,7 +391,9 @@ function FileJobTool({ app, card, onBack }: { app: AppId; card: MiniCard; onBack
     saveStr('pb.mini.cut-vid.mode', mode)
     saveStr('pb.mini.cut-vid.value', String(value))
     saveStr('pb.mini.upscale.scale', String(scale))
-  }, [app, outDir, every, mode, value, scale])
+    saveStr('pb.mini.wm.mode', wmMode)
+    saveStr('pb.mini.edit.preset', preset)
+  }, [app, outDir, every, mode, value, scale, wmMode, preset])
 
   const ready = app === 'yt-dl' ? /^https?:\/\//.test(url.trim()) : paths.length > 0
 
@@ -388,6 +406,10 @@ function FileJobTool({ app, card, onBack }: { app: AppId; card: MiniCard; onBack
       else if (app === 'cut-vid') await api('/api/mini/cut-vid', { paths, mode, value, out_dir })
       else if (app === 'upscale') await api('/api/mini/upscale', { paths, scale, out_dir })
       else if (app === 'yt-dl') await api('/api/mini/yt-dl', { url: url.trim(), limit, out_dir })
+      else if (app === 'av-srt') await api('/api/mini/av-srt', { paths, lang: srtLang, out_dir })
+      else if (app === 'wm-vid') await api('/api/mini/wm-vid', { paths, mode: wmMode, ...box, out_dir })
+      else if (app === 'wm-gem') await api('/api/mini/wm-gem', { paths, ...box, full: wmFull, out_dir })
+      else if (app === 'batch-edit') await api('/api/mini/batch-edit', { paths, preset, custom, out_dir })
     } catch (e) {
       setErr(errText(e))
     } finally {
@@ -436,8 +458,8 @@ function FileJobTool({ app, card, onBack }: { app: AppId; card: MiniCard; onBack
           </section>
         ) : (
           <FilePicker
-            kind={isVideo ? 'video' : 'anh'}
-            label={isVideo ? '1 · Chọn video' : '1 · Chọn ảnh'}
+            kind={pickKind}
+            label={pickKind === 'video' ? '1 · Chọn video' : pickKind === 'anh' ? '1 · Chọn ảnh' : '1 · Chọn audio / video'}
             paths={paths}
             setPaths={setPaths}
             outDir={outDir}
@@ -492,6 +514,113 @@ function FileJobTool({ app, card, onBack }: { app: AppId; card: MiniCard; onBack
               />
               <span className="ma-muted">{mode === 'parts' ? 'phần bằng nhau' : 'giây mỗi phần'}</span>
             </div>
+          </section>
+        )}
+
+        {app === 'av-srt' && (
+          <section className="va-card">
+            <div className="va-card-title">2 · Ngôn ngữ lời nói</div>
+            <div className="va-seg">
+              {[
+                ['', 'Tự nhận diện'],
+                ['vi', 'Tiếng Việt'],
+                ['en', 'English'],
+                ['zh', '中文'],
+                ['ja', '日本語'],
+                ['ko', '한국어'],
+              ].map(([c, l]) => (
+                <button key={c} type="button" className={`va-pill ${srtLang === c ? 'on' : ''}`} onClick={() => setSrtLang(c)}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <div className="ma-muted">
+              Dùng faster-whisper nếu đã cài (InVideo › AI Models), không thì Gemini. File .srt ra cạnh file gốc.
+            </div>
+          </section>
+        )}
+
+        {(app === 'wm-vid' || app === 'wm-gem') && (
+          <section className="va-card">
+            <div className="va-card-title">2 · Vùng logo / watermark (% khung hình)</div>
+            {app === 'wm-vid' && (
+              <div className="va-seg">
+                {[
+                  ['delogo', 'Nội suy (delogo)'],
+                  ['blur', 'Làm mờ vùng'],
+                  ['crop', 'Cắt bỏ dải mép'],
+                ].map(([m, l]) => (
+                  <button key={m} type="button" className={`va-pill ${wmMode === m ? 'on' : ''}`} onClick={() => setWmMode(m)}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="va-seg">
+              {(
+                [
+                  ['Dưới phải', { x: 80, y: 85, w: 18, h: 12 }],
+                  ['Dưới trái', { x: 2, y: 85, w: 18, h: 12 }],
+                  ['Trên phải', { x: 80, y: 3, w: 18, h: 12 }],
+                  ['Trên trái', { x: 2, y: 3, w: 18, h: 12 }],
+                  ['Gemini ✦', { x: 88, y: 88, w: 10, h: 10 }],
+                ] as const
+              ).map(([l, b]) => (
+                <button key={l} type="button" className="va-pill" onClick={() => setBox({ ...b })}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <div className="ma-row">
+              {(['x', 'y', 'w', 'h'] as const).map((k) => (
+                <label key={k} className="ma-muted">
+                  {k.toUpperCase()}{' '}
+                  <input
+                    className="ma-num"
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={box[k]}
+                    onChange={(e) => setBox({ ...box, [k]: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })}
+                  />
+                  %
+                </label>
+              ))}
+            </div>
+            <div className="wm-preview">
+              <div className="wm-box" style={{ left: `${box.x}%`, top: `${box.y}%`, width: `${box.w}%`, height: `${box.h}%` }} />
+            </div>
+            {app === 'wm-gem' && (
+              <label className="ma-muted">
+                <input type="checkbox" checked={wmFull} onChange={(e) => setWmFull(e.target.checked)} /> Vá cả vùng (khi
+                logo không sáng hơn nền)
+              </label>
+            )}
+          </section>
+        )}
+
+        {app === 'batch-edit' && (
+          <section className="va-card">
+            <div className="va-card-title">2 · Việc cần làm (Gemini sửa ảnh)</div>
+            <div className="va-seg">
+              {[
+                ['logo', 'Xoá logo / chữ / caption'],
+                ['bg_white', 'Nền trắng studio'],
+                ['bg_remove', 'Xoá nền'],
+                ['light', 'Cải thiện ánh sáng'],
+                ['upscale', 'Làm nét'],
+              ].map(([k, l]) => (
+                <button key={k} type="button" className={`va-pill ${preset === k ? 'on' : ''}`} onClick={() => setPreset(k)}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <input
+              className="ma-input"
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              placeholder="…hoặc tự viết lệnh (tiếng Anh tốt hơn), ví dụ: make it look like golden hour"
+            />
           </section>
         )}
 
@@ -836,6 +965,168 @@ function ScriptPromptTool({ onBack }: { onBack: () => void }) {
   )
 }
 
+function StockTool({ onBack }: { onBack: () => void }) {
+  const [text, setText] = useState(() => loadStr('pb.mini.stock.text', ''))
+  const [kind, setKind] = useState(() => loadStr('pb.mini.stock.kind', 'video'))
+  const [ratio, setRatio] = useState(() => loadStr('pb.mini.stock.ratio', 'ngang'))
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const jobs = useJobs(['mini-stock'])
+  const file = useLoadText(setText)
+
+  useEffect(() => {
+    saveStr('pb.mini.stock.text', text)
+    saveStr('pb.mini.stock.kind', kind)
+    saveStr('pb.mini.stock.ratio', ratio)
+  }, [text, kind, ratio])
+
+  async function run() {
+    setBusy(true)
+    setErr('')
+    try {
+      await api('/api/mini/stock', { text, kind, ratio })
+    } catch (e) {
+      setErr(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="ma-tool">
+      <ToolHeader title="Tìm Stock Theo Kịch Bản" badge="PEXELS" onBack={onBack} />
+      <div className="va-step1">
+        <section className="va-card">
+          <div className="rw-sec-head">
+            <span>📄 KỊCH BẢN / SRT</span>
+            <div className="rw-meta">
+              <span>{text.length} ký tự</span>
+              <button type="button" className="ma-link" onClick={() => void file.load()}>
+                Tải tệp .txt/.srt
+              </button>
+            </div>
+          </div>
+          <textarea className="rw-textarea sp" value={text} onChange={(e) => setText(e.target.value)} placeholder="Dán kịch bản hoặc SRT…" />
+          {file.err && <div className="ma-err">{file.err}</div>}
+          <div className="va-seg">
+            {[
+              ['video', '🎬 Video'],
+              ['img', '🖼 Ảnh'],
+            ].map(([k, l]) => (
+              <button key={k} type="button" className={`va-pill ${kind === k ? 'on' : ''}`} onClick={() => setKind(k)}>
+                {l}
+              </button>
+            ))}
+            {[
+              ['ngang', '16:9'],
+              ['doc', '9:16'],
+              ['vuong', '1:1'],
+            ].map(([k, l]) => (
+              <button key={k} type="button" className={`va-pill ${ratio === k ? 'on' : ''}`} onClick={() => setRatio(k)}>
+                {l}
+              </button>
+            ))}
+          </div>
+          <div className="ma-muted">
+            Mỗi câu (hoặc mỗi khe SRT) → Gemini đặt từ khoá → tải 1 file Pexels, đánh số theo câu, kèm _danh_sach.csv thời
+            lượng từng câu. Cần Pexels key (InVideo › AI Models).
+          </div>
+        </section>
+        <footer className="va-foot">
+          <div className="ma-err">{err}</div>
+          <button type="button" className="ma-btn gold" disabled={!text.trim() || busy} onClick={run}>
+            {busy ? 'Đang gửi…' : '🔍 Tìm & tải stock'}
+          </button>
+        </footer>
+        <JobList jobs={jobs} />
+      </div>
+    </div>
+  )
+}
+
+function FashionTool({ onBack }: { onBack: () => void }) {
+  const [products, setProducts] = useState<string[]>([])
+  const [models, setModels] = useState<string[]>([])
+  const [n, setN] = useState(() => Number(loadStr('pb.mini.fashion.n', '3')))
+  const [scene, setScene] = useState(() => loadStr('pb.mini.fashion.scene', 'clean white studio, soft light'))
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const jobs = useJobs(['mini-fashion'])
+
+  useEffect(() => {
+    saveStr('pb.mini.fashion.n', String(n))
+    saveStr('pb.mini.fashion.scene', scene)
+  }, [n, scene])
+
+  async function choose(set: (p: string[]) => void) {
+    try {
+      const ps = await pickFiles('anh', true)
+      if (ps.length) set(ps)
+    } catch (e) {
+      setErr(errText(e))
+    }
+  }
+
+  async function run() {
+    setBusy(true)
+    setErr('')
+    try {
+      await api('/api/mini/fashion', { products, models, n, scene })
+    } catch (e) {
+      setErr(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const total = products.length * Math.max(1, models.length) * n
+  return (
+    <div className="ma-tool">
+      <ToolHeader title="Tạo Ảnh Thời Trang SLL" badge="GEMINI" onBack={onBack} />
+      <div className="va-step1">
+        <section className="va-card">
+          <div className="va-card-title">1 · Ảnh sản phẩm ({products.length})</div>
+          <div className="ma-row">
+            <button type="button" className="ma-btn primary" onClick={() => void choose(setProducts)}>
+              👕 Chọn ảnh sản phẩm
+            </button>
+            <span className="ma-muted">{products.map(baseName).join(' · ')}</span>
+          </div>
+        </section>
+        <section className="va-card">
+          <div className="va-card-title">2 · Ảnh người mẫu ({models.length}) — tuỳ chọn</div>
+          <div className="ma-row">
+            <button type="button" className="ma-btn ghost" onClick={() => void choose(setModels)}>
+              🧍 Chọn ảnh người mẫu
+            </button>
+            {models.length > 0 && (
+              <button type="button" className="ma-link" onClick={() => setModels([])}>
+                Bỏ
+              </button>
+            )}
+            <span className="ma-muted">{models.length ? models.map(baseName).join(' · ') : 'Không chọn → AI tự chọn người mẫu'}</span>
+          </div>
+        </section>
+        <section className="va-card">
+          <div className="va-card-title">3 · Số ảnh mỗi cặp · bối cảnh</div>
+          <div className="ma-row">
+            <input className="ma-num" type="number" min={1} max={8} value={n} onChange={(e) => setN(Math.min(8, Math.max(1, Number(e.target.value) || 1)))} />
+            <span className="ma-muted">ảnh / (sản phẩm × người mẫu), mỗi ảnh một tư thế</span>
+          </div>
+          <input className="ma-input" value={scene} onChange={(e) => setScene(e.target.value)} placeholder="Bối cảnh (tiếng Anh): street style Paris, beach sunset…" />
+        </section>
+        <footer className="va-foot">
+          <div className="ma-err">{err}</div>
+          <button type="button" className="ma-btn gold" disabled={!products.length || busy} onClick={run}>
+            {busy ? 'Đang gửi…' : `✨ Tạo ${total} ảnh`}
+          </button>
+        </footer>
+        <JobList jobs={jobs} />
+      </div>
+    </div>
+  )
+}
+
 function Hub({ onOpen }: { onOpen: (id: AppId) => void }) {
   return (
     <div className="ma-hub">
@@ -1150,6 +1441,10 @@ function RewriteTool({ onBack }: { onBack: () => void }) {
 function VaPromptTool({ onBack }: { onBack: () => void }) {
   const [step, setStep] = useState<1 | 2 | 3>(1)
   const [fileName, setFileName] = useState('')
+  const [filePath, setFilePath] = useState('')
+  const [vaErr, setVaErr] = useState('')
+  const [vaMsg, setVaMsg] = useState('')
+  const [bible, setBible] = useState('')
   const [clip, setClip] = useState('8s (Veo 3)')
   const [kind, setKind] = useState('Cả Ảnh & Video')
   const [aspect, setAspect] = useState('16:9')
@@ -1164,45 +1459,47 @@ function VaPromptTool({ onBack }: { onBack: () => void }) {
 
   const totalDur = scenes.length === 0 ? '00:00.00' : `00:${String(scenes.length * 8).padStart(2, '0')}.00`
 
-  function pickFile(f: File | null | undefined) {
-    if (!f) return
-    setFileName(f.name)
+  async function pickFile() {
+    try {
+      const [p] = await pickFiles('', false)
+      if (p) {
+        setFilePath(p)
+        setFileName(baseName(p))
+      }
+    } catch (e) {
+      setVaErr(errText(e))
+    }
   }
 
-  function createPrompts() {
-    if (!fileName) {
-      setFileName('demo_voiceover.mp4')
+  async function createPrompts() {
+    if (!filePath) {
+      setVaErr('Chọn file video / audio trước')
+      return
     }
     setBusy(true)
-    window.setTimeout(() => {
-      const name = fileName || 'demo_voiceover.mp4'
-      const styleName = VA_STYLES.find((s) => s.id === style)?.name || style
-      setScenes([
-        {
-          id: 1,
-          time: '00:00–00:08',
-          text: `Hook mở đầu từ ${name}`,
-          img: `[${styleName}] Wide establishing shot, ${aspect}, cinematic lighting, ${cam}`,
-          vid: `Camera ${cam.toLowerCase()}, subject enters frame, ${clip}`,
-        },
-        {
-          id: 2,
-          time: '00:08–00:16',
-          text: 'Điểm nhấn nội dung chính',
-          img: `[${styleName}] Mid shot character talking to camera, consistent identity lock`,
-          vid: `Subtle push-in, lip-sync friendly pacing, ${clip}`,
-        },
-        {
-          id: 3,
-          time: '00:16–00:24',
-          text: 'CTA / kết thúc',
-          img: `[${styleName}] End card composition, clean negative space for text`,
-          vid: `Slow pull-back to logo safe area, ${clip}`,
-        },
-      ])
-      setBusy(false)
+    setVaErr('')
+    try {
+      const styleMeta = VA_STYLES.find((s) => s.id === style)
+      const r = await api<{ id: string }>('/api/mini/va-prompt', {
+        path: filePath,
+        clipSec: parseInt(clip, 10) || 8,
+        style: `${styleMeta?.name} (${styleMeta?.desc}) · camera: ${cam} · nhân vật: ${face} · loại prompt: ${kind}`,
+        aspect,
+        outLang,
+      })
+      const j = await waitJob(r.id, setVaMsg)
+      const res = (j as BridgeJob & { result?: { bible: string; scenes: PromptScene[] } }).result
+      setBible(res?.bible || '')
+      setScenes(
+        (res?.scenes || []).map((s, i) => ({ id: i + 1, time: s.time || '', text: s.text || '', img: s.img || '', vid: s.vid || '' })),
+      )
       setStep(2)
-    }, 800)
+    } catch (e) {
+      setVaErr(errText(e))
+    } finally {
+      setBusy(false)
+      setVaMsg('')
+    }
   }
 
   return (
@@ -1216,7 +1513,7 @@ function VaPromptTool({ onBack }: { onBack: () => void }) {
             <span className="ma-title-ico">🎞️</span>
             <h1>Video/Audio → Prompt Ảnh & Video</h1>
             <span className="ma-badge gold">AI Director Studio</span>
-            <span className="ma-badge muted">MOCK · dùng «Kịch Bản → Prompt» để tạo thật</span>
+            <span className="ma-badge green">LIVE</span>
           </div>
           <div className="ma-sub">
             Nạp Video hoặc Audio → Tự động bóc tách lời thoại & Đạo diễn sinh Prompt ảnh + video nhất quán
@@ -1247,30 +1544,17 @@ function VaPromptTool({ onBack }: { onBack: () => void }) {
         <div className="va-step1">
           <section className="va-card">
             <div className="va-card-title">1 · Nạp Video hoặc Audio Thuyết Minh</div>
-            <label
-              className="va-drop"
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault()
-                pickFile(e.dataTransfer.files?.[0])
-              }}
-            >
+            <div className="va-drop" role="button" tabIndex={0} onClick={() => void pickFile()}>
               <div className="va-drop-ico">⬆️</div>
               <div className="va-drop-main">
                 {fileName
                   ? `Đã chọn: ${fileName}`
-                  : 'Kéo thả file Video (MP4, MKV, MOV...) hoặc Audio (MP3, WAV, M4A...) vào đây'}
+                  : 'Bấm để chọn file Video (MP4, MKV, MOV...) hoặc Audio (MP3, WAV, M4A...)'}
               </div>
               <div className="ma-muted">
                 Chọn xong file và cài đặt prompt bên dưới, rồi bấm nút &quot;Tạo Prompt Từ Video/Audio&quot;
               </div>
-              <input
-                type="file"
-                accept="video/*,audio/*"
-                hidden
-                onChange={(e) => pickFile(e.target.files?.[0])}
-              />
-            </label>
+            </div>
           </section>
 
           <section className="va-card">
@@ -1377,7 +1661,7 @@ function VaPromptTool({ onBack }: { onBack: () => void }) {
 
           <footer className="va-foot">
             <div className="ma-muted">
-              Quy trình tự động: Tách lời thoại → Khóa thực thể → Sinh Prompt ảnh & video
+              {vaErr ? <span className="ma-err">{vaErr}</span> : vaMsg || 'Quy trình: Phiên âm (Whisper/Gemini) → Gemini đạo diễn → Prompt ảnh & video'}
             </div>
             <button
               type="button"
@@ -1385,7 +1669,7 @@ function VaPromptTool({ onBack }: { onBack: () => void }) {
               disabled={busy}
               onClick={createPrompts}
             >
-              {busy ? 'Đang tạo (mock)...' : '✨ Tạo Prompt Từ Video/Audio'}
+              {busy ? 'Đang tạo…' : '✨ Tạo Prompt Từ Video/Audio'}
             </button>
           </footer>
         </div>
@@ -1398,11 +1682,26 @@ function VaPromptTool({ onBack }: { onBack: () => void }) {
               Danh sách {scenes.length} phân cảnh đã sinh Prompt (Tổng thời lượng: {totalDur})
             </div>
             <div className="va-list-acts">
-              <button type="button" className="ma-btn ghost">
-                Copy Prompt ▾
+              <button
+                type="button"
+                className="ma-btn ghost"
+                onClick={() => navigator.clipboard?.writeText(scenes.map((s) => s.img).filter(Boolean).join('\n'))}
+              >
+                Copy prompt ảnh
               </button>
-              <button type="button" className="ma-btn ghost">
-                Xuất File ▾
+              <button
+                type="button"
+                className="ma-btn ghost"
+                onClick={() => navigator.clipboard?.writeText(scenes.map((s) => s.vid).filter(Boolean).join('\n'))}
+              >
+                Copy prompt video
+              </button>
+              <button
+                type="button"
+                className="ma-btn ghost"
+                onClick={() => downloadText('prompts.json', JSON.stringify({ bible, scenes }, null, 2))}
+              >
+                Xuất JSON
               </button>
             </div>
           </div>
@@ -1454,22 +1753,7 @@ function VaPromptTool({ onBack }: { onBack: () => void }) {
               </div>
             ) : (
               <div className="va-bible-body">
-                <div className="va-entity">
-                  <b>Nhân vật chính</b>
-                  <span>Auto lock từ voiceover · {face}</span>
-                </div>
-                <div className="va-entity">
-                  <b>Phong cách</b>
-                  <span>{VA_STYLES.find((s) => s.id === style)?.name}</span>
-                </div>
-                <div className="va-entity">
-                  <b>Palette / Mood</b>
-                  <span>Consistent across {scenes.length} scenes · {aspect} · {outLang === 'en' ? 'EN' : 'VI'}</span>
-                </div>
-                <div className="va-entity">
-                  <b>Camera bible</b>
-                  <span>{cam}</span>
-                </div>
+                <pre className="ma-pre">{bible || 'Gemini không trả Story Bible cho file này.'}</pre>
               </div>
             )}
           </div>
@@ -1636,7 +1920,26 @@ export default function MiniAppWorkspace() {
     )
   }
 
-  if (card && (app === 'cut-img' || app === 'cut-vid' || app === 'upscale' || app === 'yt-dl')) {
+  if (app === 'stock') {
+    return (
+      <div className="ma-root">
+        <StockTool onBack={() => setApp('hub')} />
+      </div>
+    )
+  }
+
+  if (app === 'fashion') {
+    return (
+      <div className="ma-root">
+        <FashionTool onBack={() => setApp('hub')} />
+      </div>
+    )
+  }
+
+  if (
+    card &&
+    ['cut-img', 'cut-vid', 'upscale', 'yt-dl', 'av-srt', 'wm-vid', 'wm-gem', 'batch-edit'].includes(app)
+  ) {
     return (
       <div className="ma-root">
         <FileJobTool key={app} app={app} card={card} onBack={() => setApp('hub')} />

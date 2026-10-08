@@ -2802,6 +2802,345 @@ def seedance_chay(d: dict) -> dict:
     return _chay_nen("seedance", model, out_dir, viec, "seedance")
 
 
+# ───────────────────────── MiniApp (đợt 2) ─────────────────────────
+
+GEMINI_IMAGE_MODEL = os.environ.get("PB_GEMINI_IMAGE_MODEL") or "gemini-2.5-flash-image"
+
+
+def gemini_anh(prompt: str, images: list[str], out: str) -> str:
+    """Gemini sửa / ghép ảnh (ảnh vào + lệnh → ảnh ra). Xoay khoá khi lỗi hạn mức."""
+    keys = gemini_keys()
+    if not keys:
+        raise RuntimeError("Chưa có Gemini key — nhập ở Cài đặt › Tài khoản")
+    parts = []
+    for p in images:
+        duoi = os.path.splitext(p)[1].lower().lstrip(".")
+        with open(p, "rb") as f:
+            parts.append({"inlineData": {"mimeType": "image/" + {"jpg": "jpeg"}.get(duoi, duoi or "png"),
+                                         "data": base64.b64encode(f.read()).decode()}})
+    parts.append({"text": prompt})
+    loi = ""
+    for k in keys:
+        ma, raw = _http_json(
+            "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s"
+            % (GEMINI_IMAGE_MODEL, k),
+            {"contents": [{"parts": parts}], "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]}})
+        if ma != 200:
+            loi = "Gemini ảnh HTTP %d: %s" % (ma, raw[:200].decode("utf-8", "replace"))
+            continue
+        ps = ((json.loads(raw).get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        b64 = next((x["inlineData"]["data"] for x in ps if x.get("inlineData")), "")
+        if b64:
+            with open(out, "wb") as f:
+                f.write(base64.b64decode(b64))
+            return out
+        loi = "Gemini không trả ảnh: %s" % "".join(x.get("text") or "" for x in ps)[:160]
+    raise RuntimeError(loi)
+
+
+def mini_srt(paths, lang: str, out_dir: str) -> dict:
+    """Audio/Video → SRT (faster-whisper nếu có, không thì Gemini). SRT ra cạnh file gốc."""
+    ds = _ds_file(paths, DUOI_VIDEO + (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"))
+    if not ds:
+        raise RuntimeError("Chưa chọn file audio/video")
+
+    def viec(v):
+        cuoi = ""
+        for i, p in enumerate(ds, 1):
+            v["msg"] = "%d/%d · nghe %s…" % (i, len(ds), os.path.basename(p))
+            segs = phien_am(p, lang)
+            dich = os.path.join(out_dir or os.path.dirname(p), os.path.splitext(os.path.basename(p))[0] + ".srt")
+            cuoi = ghi_srt(segs, dich)
+        v["msg"] = "Xong %d file" % len(ds)
+        return cuoi
+    return _chay_nen("mini-av-srt", ds[0], out_dir or os.path.dirname(ds[0]), viec)
+
+
+def mini_va_prompt(path: str, d: dict) -> dict:
+    """Video/Audio thuyết minh → phiên âm → prompt ảnh/video từng cảnh (kết quả ở v["result"])."""
+    if not os.path.isfile(path):
+        raise RuntimeError("Chưa chọn file")
+
+    def viec(v):
+        v["msg"] = "Phiên âm…"
+        segs = phien_am(path)
+        if not segs:
+            raise RuntimeError("Không nghe được lời nào")
+        v["msg"] = "Gemini đạo diễn %d câu…" % len(segs)
+        srt = "\n\n".join("%d\n%s --> %s\n%s" % (i + 1, _giay_srt(s["start"]), _giay_srt(s["end"]), s["text"])
+                          for i, s in enumerate(segs))
+        kq = mini_kich_ban_prompt({**d, "text": srt})
+        v["result"] = kq
+        v["msg"] = "Xong · %d cảnh" % len(kq["scenes"])
+        return ""
+    return _chay_nen("mini-va-prompt", path, "", viec)
+
+
+def mini_stock(d: dict) -> dict:
+    """Kịch bản / SRT → từ khoá từng câu → tải ảnh/video Pexels, đánh số theo câu."""
+    chu = str(d.get("text") or "").strip()
+    if not chu:
+        raise RuntimeError("Chưa có kịch bản")
+    la_video = d.get("kind") == "video"
+    ratio = d.get("ratio") if d.get("ratio") in KHUNG else "ngang"
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), "Stock_" + time.strftime("%Y%m%d_%H%M%S"))
+    if re.search(r"\d\d:\d\d:\d\d[,.]\d{3}\s*-->", chu):
+        tam = os.path.join(REF_DIR, "stock_%s.srt" % uuid.uuid4().hex[:6])
+        os.makedirs(REF_DIR, exist_ok=True)
+        with open(tam, "w", encoding="utf-8") as f:
+            f.write(chu)
+        cau = doc_srt(tam)
+        os.remove(tam)
+    else:
+        t, cau = 0.0, []
+        for c in _chia_canh(chu, 1):                       # mỗi câu một mục stock
+            dai = max(2.0, len(c.split()) / 2.6)          # ~2.6 từ/giây khi đọc
+            cau.append({"start": t, "end": t + dai, "text": c})
+            t += dai
+    if not cau:
+        raise RuntimeError("Không tách được câu nào")
+
+    def viec(v):
+        v["msg"] = "Gemini đặt từ khoá %d câu…" % len(cau)
+        tu = _tu_khoa([c["text"] for c in cau])
+        dong = ["so,bat_dau,ket_thuc,thoi_luong,tu_khoa,file,loi"]
+        for i, (c, q) in enumerate(zip(cau, tu), 1):
+            v["msg"] = "%d/%d · %s" % (i, len(cau), q)
+            ten = ""
+            try:
+                url = pexels_tim(q, la_video, ratio)
+                if url:
+                    ten = "%03d_%s%s" % (i, re.sub(r"\W+", "_", q)[:40], ".mp4" if la_video else ".jpg")
+                    _tai_url(url, os.path.join(out_dir, ten))
+            except RuntimeError:
+                raise
+            except Exception as e:
+                log("⚠ Câu %d: %s" % (i, e), "INFO", "mini")
+            dong.append('%d,%.2f,%.2f,%.2f,"%s",%s,%s' % (i, c["start"], c["end"], c["end"] - c["start"],
+                                                         q.replace('"', "'"), ten, "" if ten else "khong_thay"))
+        with open(os.path.join(out_dir, "_danh_sach.csv"), "w", encoding="utf-8-sig") as f:
+            f.write("\n".join(dong))
+        v["msg"] = "Xong %d câu" % len(cau)
+        return ""
+    return _chay_nen("mini-stock", "%d câu" % len(cau), out_dir, viec)
+
+
+VUNG_GOC = {"br": "dưới phải", "bl": "dưới trái", "tr": "trên phải", "tl": "trên trái"}
+
+
+def _vung(w: int, h: int, d: dict) -> tuple[int, int, int, int]:
+    """Vùng logo: x,y,w,h theo % khung (người dùng khoanh) → pixel, kẹp trong khung."""
+    x = int(w * float(d.get("x", 80)) / 100)
+    y = int(h * float(d.get("y", 85)) / 100)
+    vw = max(4, int(w * float(d.get("w", 18)) / 100))
+    vh = max(4, int(h * float(d.get("h", 12)) / 100))
+    x, y = max(1, min(x, w - vw - 1)), max(1, min(y, h - vh - 1))
+    return x, y, vw, vh
+
+
+def mini_xoa_logo_video(paths, d: dict) -> dict:
+    """3 chế độ: delogo (nội suy viền) · blur (làm mờ vùng) · crop (cắt bỏ dải mép chứa logo)."""
+    ds = _ds_file(paths, DUOI_VIDEO)
+    if not ds:
+        raise RuntimeError("Chưa chọn video")
+    che_do = str(d.get("mode") or "delogo")
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), "Xoa_logo")
+
+    def viec(v):
+        ff = _exe("ffmpeg")
+        for i, p in enumerate(ds, 1):
+            v["msg"] = "%d/%d · %s" % (i, len(ds), os.path.basename(p))
+            info = _probe(p)
+            w, h = info["w"], info["h"]
+            if not w:
+                raise RuntimeError("Không đọc được khung: %s" % p)
+            x, y, vw, vh = _vung(w, h, d)
+            if che_do == "blur":
+                loc = ("[0:v]split[a][b];[b]crop=%d:%d:%d:%d,boxblur=20:2[m];[a][m]overlay=%d:%d"
+                       % (vw, vh, x, y, x, y))
+            elif che_do == "crop":
+                # Cắt dải mép gần logo nhất rồi phóng lại đúng khung cũ
+                if y + vh / 2 > h / 2:
+                    giu = "crop=%d:%d:0:0" % (w, y)
+                else:
+                    giu = "crop=%d:%d:0:%d" % (w, h - (y + vh), y + vh)
+                loc = "[0:v]%s,scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d" % (giu, w, h, w, h)
+            else:
+                loc = "[0:v]delogo=x=%d:y=%d:w=%d:h=%d" % (x, y, vw, vh)
+            ra = os.path.join(out_dir, os.path.splitext(os.path.basename(p))[0] + "_nologo.mp4")
+            subprocess.run([ff, "-y", "-v", "error", "-i", p, "-filter_complex", loc + "[v]", "-map", "[v]",
+                            "-map", "0:a?", "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-c:a", "copy", ra],
+                           check=True, creationflags=_KHONG_CUA_SO)
+        v["msg"] = "Xong %d video" % len(ds)
+        return ""
+    return _chay_nen("mini-wm-vid", ds[0], out_dir, viec)
+
+
+def mini_xoa_wm_anh(paths, d: dict) -> dict:
+    """Xoá dấu ✦ Gemini (hoặc logo ở góc) bằng inpaint OpenCV trên vùng góc đã chọn."""
+    ds = _ds_file(paths, DUOI_ANH)
+    if not ds:
+        raise RuntimeError("Chưa chọn ảnh")
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), "Xoa_wm_anh")
+
+    def viec(v):
+        import cv2
+        import numpy as np
+        for i, p in enumerate(ds, 1):
+            v["msg"] = "%d/%d · %s" % (i, len(ds), os.path.basename(p))
+            img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                raise RuntimeError("Không đọc được ảnh: %s" % p)
+            h, w = img.shape[:2]
+            x, y, vw, vh = _vung(w, h, d)
+            vung = img[y:y + vh, x:x + vw]
+            # Dấu Gemini sáng hơn nền: lấy điểm sáng nổi bật trong vùng làm mặt nạ, nở ra cho kín viền
+            xam = cv2.cvtColor(vung, cv2.COLOR_BGR2GRAY)
+            # Nhân median lớn hơn logo → ước lượng được nền thật kể cả giữa logo
+            nen = cv2.medianBlur(xam, min(255, max(21, max(vw, vh)) | 1))
+            mn = ((xam.astype(int) - nen.astype(int)) > int(d.get("nguong", 18))).astype(np.uint8) * 255
+            if d.get("full") or mn.sum() == 0:
+                mn[:] = 255
+            mn = cv2.dilate(mn, np.ones((5, 5), np.uint8), iterations=2)
+            mask = np.zeros((h, w), np.uint8)
+            mask[y:y + vh, x:x + vw] = mn
+            kq = cv2.inpaint(img, mask, 5, cv2.INPAINT_TELEA)
+            ra = os.path.join(out_dir, os.path.splitext(os.path.basename(p))[0] + "_clean.png")
+            ok, buf = cv2.imencode(".png", kq)
+            if ok:
+                buf.tofile(ra)
+        v["msg"] = "Xong %d ảnh" % len(ds)
+        return ""
+    return _chay_nen("mini-wm-gem", ds[0], out_dir, viec)
+
+
+SUA_ANH = {
+    "logo": "Remove every logo, watermark, caption and overlaid text. Reconstruct the background naturally. "
+            "Change nothing else.",
+    "bg_white": "Remove the background and place the main subject on a pure white (#FFFFFF) studio background. "
+                "Keep the subject pixel-identical.",
+    "bg_remove": "Remove the background completely, keep only the main subject on a plain light grey background.",
+    "light": "Improve lighting and color: balanced exposure, natural contrast, clean whites, vivid but realistic "
+             "colors. Do not change composition or content.",
+    "upscale": "Sharpen and enhance detail like a high quality professional photo, reduce noise and blur. "
+               "Keep composition identical.",
+}
+
+
+def mini_sua_anh(paths, d: dict) -> dict:
+    ds = _ds_file(paths, DUOI_ANH)
+    if not ds:
+        raise RuntimeError("Chưa chọn ảnh")
+    lenh = str(d.get("custom") or "").strip() or SUA_ANH.get(str(d.get("preset") or "logo"), SUA_ANH["logo"])
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), "Sua_anh")
+
+    def viec(v):
+        loi = 0
+        for i, p in enumerate(ds, 1):
+            v["msg"] = "%d/%d · %s" % (i, len(ds), os.path.basename(p))
+            try:
+                gemini_anh(lenh, [p], os.path.join(out_dir, os.path.splitext(os.path.basename(p))[0] + "_ai.png"))
+            except Exception as e:
+                loi += 1
+                log("❌ %s: %s" % (os.path.basename(p), e), "LỖI", "mini")
+        v["msg"] = "Xong %d/%d ảnh" % (len(ds) - loi, len(ds))
+        if loi == len(ds):
+            raise RuntimeError("Không sửa được ảnh nào (xem nhật ký)")
+        return ""
+    return _chay_nen("mini-batch-edit", ds[0], out_dir, viec)
+
+
+def mini_thoi_trang(d: dict) -> dict:
+    """Ảnh sản phẩm (áo/quần/phụ kiện) + ảnh người mẫu → N ảnh người mẫu mặc sản phẩm."""
+    sp = _ds_file(d.get("products"), DUOI_ANH)
+    mau = _ds_file(d.get("models"), DUOI_ANH)
+    if not sp:
+        raise RuntimeError("Chưa chọn ảnh sản phẩm")
+    n = max(1, min(8, int(d.get("n") or 2)))
+    boi_canh = str(d.get("scene") or "clean studio, soft light").strip()
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), "Thoi_trang_" + time.strftime("%Y%m%d_%H%M%S"))
+    TU_THE = ["front view, standing", "three-quarter view, walking", "side view, hand on hip",
+              "close-up upper body", "sitting casually", "back view looking over shoulder",
+              "full body, dynamic pose", "lifestyle candid shot"]
+
+    def viec(v):
+        loi, tong = 0, 0
+        for a, s in enumerate(sp, 1):
+            for b, m in enumerate(mau or [""], 1):
+                for k in range(n):
+                    tong += 1
+                    v["msg"] = "SP %d/%d · mẫu %d · ảnh %d/%d" % (a, len(sp), b, k + 1, n)
+                    anh = [s] + ([m] if m else [])
+                    lenh = ("Fashion e-commerce photo. The first image is the product — reproduce it EXACTLY "
+                            "(shape, color, pattern, logo, material). %s Pose: %s. Background: %s. "
+                            "Photorealistic, high detail, natural skin, correct garment fit." % (
+                                "Dress the person from the second image (keep face, body and identity) in this "
+                                "product." if m else "Show it worn by a fitting professional model.",
+                                TU_THE[k % len(TU_THE)], boi_canh))
+                    try:
+                        gemini_anh(lenh, anh, os.path.join(out_dir, "sp%02d_mau%02d_%02d.png" % (a, b, k + 1)))
+                    except Exception as e:
+                        loi += 1
+                        log("❌ Thời trang %d/%d/%d: %s" % (a, b, k + 1, e), "LỖI", "mini")
+        v["msg"] = "Xong %d/%d ảnh" % (tong - loi, tong)
+        if loi == tong:
+            raise RuntimeError("Không tạo được ảnh nào (xem nhật ký)")
+        return ""
+    return _chay_nen("mini-fashion", "%d SP × %d mẫu" % (len(sp), max(1, len(mau))), out_dir, viec)
+
+
+# ───────────────────────── Veo3 · Script To Video ─────────────────────────
+
+def veo3_kich_ban(d: dict) -> dict:
+    """Dự án Script To Video → prompt video từng cảnh ~8s (kết quả ở v["result"]).
+
+    Link YouTube/TikTok: tải phụ đề (hoặc phiên âm) để Gemini «xem» nội dung gốc."""
+    nguon = str(d.get("source") or "upload")
+    giay = max(8, int(d.get("durationSec") or 30))
+    so = max(1, min(60, (giay + 7) // 8))
+
+    def viec(v):
+        noi_dung = str(d.get("script") or "").strip()
+        link = str(d.get("link") or "").strip()
+        if nguon in ("youtube", "tiktok") and re.match(r"https?://", link):
+            tmp = os.path.join(REF_DIR, "s2v_" + v["id"])
+            os.makedirs(tmp, exist_ok=True)
+            try:
+                v["msg"] = "Tải video gốc…"
+                vid, segs = _tai_link(link, tmp, "English")
+                if not segs:
+                    v["msg"] = "Phiên âm video gốc…"
+                    segs = phien_am(vid)
+                giay_goc = _thoi_luong(vid)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            noi_dung = ("Video gốc dài %.0fs. Lời/phụ đề:\n%s\n\n%s" % (
+                giay_goc, " ".join(s["text"] for s in segs)[:15000], noi_dung)).strip()
+        if not noi_dung:
+            raise RuntimeError("Dự án chưa có kịch bản / ý tưởng / link")
+        v["msg"] = "Gemini chia %d cảnh…" % so
+        raw = _bo_rao(gemini_text(
+            "Bạn là đạo diễn video AI (Veo 3). Từ nội dung dưới đây, viết ĐÚNG %d prompt video tiếng Anh, "
+            "mỗi prompt một cảnh ~8 giây nối tiếp thành câu chuyện liền mạch. Phong cách: %s. Tỉ lệ %s. "
+            "Mỗi prompt tự đủ nghĩa: mô tả nhân vật (giữ y hệt ngoại hình giữa các cảnh), bối cảnh, hành động, "
+            "góc máy và chuyển động máy, ánh sáng; lời thoại nếu có đặt trong ngoặc kép.\n"
+            "Trả về DUY NHẤT JSON mảng chuỗi.\n\n%s" % (so, d.get("style") or "cinematic",
+                                                    d.get("ratio") or "16:9", noi_dung)))
+        m = re.search(r"\[.*\]", raw, re.S)
+        try:
+            ds = [str(x).strip() for x in json.loads(m.group(0) if m else raw) if str(x).strip()]
+        except ValueError:
+            raise RuntimeError("Gemini không trả JSON hợp lệ — thử lại")
+        if not ds:
+            raise RuntimeError("Gemini không trả prompt nào")
+        v["result"] = {"prompts": ds}
+        v["msg"] = "Xong · %d cảnh" % len(ds)
+        return ""
+
+    log("🎬 Script To Video: %s · %ss · %d cảnh" % (nguon, giay, so), "INFO", "flow")
+    return _chay_nen("veo3-script", str(d.get("title") or nguon), "", viec, "flow")
+
+
 # ───────────────────────── tiện ích ─────────────────────────
 
 def chon_thu_muc(goc: str = "") -> str:
@@ -3035,6 +3374,21 @@ class XuLy(BaseHTTPRequestHandler):
             if u.path == "/api/mini/trim":
                 return self._json(200, {"ok": True, **mini_cat_doan(
                     str(d.get("path") or ""), float(d.get("start") or 0), float(d.get("end") or 0))})
+            if u.path == "/api/mini/av-srt":
+                return self._json(200, {"ok": True, **mini_srt(d.get("paths"), str(d.get("lang") or ""),
+                                                               str(d.get("out_dir") or ""))})
+            if u.path == "/api/mini/va-prompt":
+                return self._json(200, {"ok": True, **mini_va_prompt(str(d.get("path") or ""), d)})
+            if u.path == "/api/mini/stock":
+                return self._json(200, {"ok": True, **mini_stock(d)})
+            if u.path == "/api/mini/wm-vid":
+                return self._json(200, {"ok": True, **mini_xoa_logo_video(d.get("paths"), d)})
+            if u.path == "/api/mini/wm-gem":
+                return self._json(200, {"ok": True, **mini_xoa_wm_anh(d.get("paths"), d)})
+            if u.path == "/api/mini/batch-edit":
+                return self._json(200, {"ok": True, **mini_sua_anh(d.get("paths"), d)})
+            if u.path == "/api/mini/fashion":
+                return self._json(200, {"ok": True, **mini_thoi_trang(d)})
             if u.path == "/api/mini/read-text":
                 return self._json(200, {"ok": True, "text": doc_chu(str(d.get("path") or ""))})
             if u.path == "/api/mini/cut-img":
@@ -3077,6 +3431,8 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "cfg": che,
                                         "gemini": len(gemini_keys_an_toan()),
                                         "eleven": len(eleven_keys())})
+            if u.path == "/api/veo3/script":
+                return self._json(200, {"ok": True, **veo3_kich_ban(d)})
             if u.path == "/api/seedance/config":
                 return self._json(200, {"ok": True, **seedance_cfg(d.get("set") if isinstance(d.get("set"), dict) else None)})
             if u.path == "/api/seedance/run":
