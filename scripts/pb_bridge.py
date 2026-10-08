@@ -635,10 +635,10 @@ class HangVids:
                     log("🎞 Gốc %.1fs · Vids trả %.1fs → %s" % (
                         d_goc, d_moi, "đã gồm cả đoạn gốc" if da_du else "chỉ đoạn mới, nối lại"), "INFO", tag)
                 if goc_ext and da_du:
-                    noi = os.path.splitext(goc_ext)[0] + "_keo_dai.mp4"
+                    noi = os.path.join(j["out_dir"], os.path.splitext(os.path.basename(goc_ext))[0] + "_keo_dai.mp4")
                     k = 2
                     while os.path.exists(noi):
-                        noi = os.path.splitext(goc_ext)[0] + "_keo_dai_%d.mp4" % k
+                        noi = os.path.join(j["out_dir"], os.path.splitext(os.path.basename(goc_ext))[0] + "_keo_dai_%d.mp4" % k)
                         k += 1
                     try:
                         os.replace(out, noi)
@@ -648,10 +648,10 @@ class HangVids:
                 elif goc_ext:
                     # Nối video gốc + đoạn kéo dài (dựng lại cho khớp khung/fps/âm thanh)
                     j["buoc"] = "nối video"
-                    noi = os.path.splitext(goc_ext)[0] + "_keo_dai.mp4"
+                    noi = os.path.join(j["out_dir"], os.path.splitext(os.path.basename(goc_ext))[0] + "_keo_dai.mp4")
                     k = 2
                     while os.path.exists(noi):
-                        noi = os.path.splitext(goc_ext)[0] + "_keo_dai_%d.mp4" % k
+                        noi = os.path.join(j["out_dir"], os.path.splitext(os.path.basename(goc_ext))[0] + "_keo_dai_%d.mp4" % k)
                         k += 1
                     try:
                         info = _probe(goc_ext)
@@ -3485,10 +3485,26 @@ def ban_quyen(d: dict) -> dict:
             "days": st.get("days"), "name": st.get("name") or "", "machine_id": license_manager.machine_id()}
 
 
+# Video người dùng thêm từ máy vào tab Kéo dài (để /api/file phát xem trước được).
+VIDEO_KEO_DAI: set = set()
+
+
+def them_video_keo_dai(paths) -> list[str]:
+    ra = []
+    for p in paths or []:
+        p = str(p or "")
+        if os.path.isabs(p) and os.path.isfile(p) and p.lower().endswith(DUOI_VIDEO):
+            VIDEO_KEO_DAI.add(p)
+            ra.append(p)
+    return ra
+
+
 def file_cua_app() -> set:
     """Mọi file do cầu nối tạo ra trong phiên này (Vids, Muse, việc nền, Flow)."""
     cho_phep = {j.get("out_path") for j in HANG.jobs.values()}
     cho_phep.update(j.get("clip_path") for j in HANG.jobs.values())
+    cho_phep.update(j.get("extend_from") for j in HANG.jobs.values())
+    cho_phep.update(VIDEO_KEO_DAI)
     cho_phep.update(j.get("out_path") for j in MUSE.jobs.values())
     cho_phep.update(v.get("out_path") for v in VIEC.viec.values())
     for v in list(VIEC.viec.values()):
@@ -3724,6 +3740,8 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(500, {"ok": False, "error": str(e)})
         d = self._body()
         try:
+            if u.path == "/api/vids/extend-src":
+                return self._json(200, {"ok": True, "paths": them_video_keo_dai(d.get("paths"))})
             if u.path == "/api/vids/start":
                 ids = HANG.them(d)
                 log("▶ Vids: thêm %d prompt · %s · %s · %ss · %s luồng" % (

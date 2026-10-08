@@ -228,6 +228,12 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   const logSince = useRef(0)
   const [nguonMap, setNguonMap] = useState<Record<string, { co: boolean; email: string }>>({})
   useEffect(() => {
+    if (extendList.length) {
+      api('/api/vids/extend-src', { paths: extendList.map((x) => x.src) }).catch(() => {})
+    }
+    // chỉ lúc mở tab — video thêm sau đã đăng ký khi thêm
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
     const thieu = extendList.map((x) => x.src).filter((src) => !(src in nguonMap))
     if (!thieu.length) return
     let dead = false
@@ -402,6 +408,29 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
       }
     } catch (e) {
       flash(`Không mở được hộp chọn thư mục: ${(e as Error).message}`)
+    }
+  }
+
+  /** Tab Kéo dài: thêm video có sẵn trên máy (hộp chọn file của Windows). */
+  const addPcVideos = async () => {
+    try {
+      const pick = await api<{ paths: string[] }>('/api/pick-files', { kind: 'video' })
+      if (!pick.paths?.length) return
+      const ok = await api<{ paths: string[] }>('/api/vids/extend-src', { paths: pick.paths })
+      if (!ok.paths.length) {
+        flash('Không đọc được video đã chọn')
+        return
+      }
+      setExtendList((prev) => [
+        ...ok.paths
+          .filter((src) => !prev.some((x) => x.src === src))
+          .map((src, i) => ({ id: `pc_${Date.now()}_${i}`, src, prompt: '', duration: 8 })),
+        ...prev,
+      ])
+      setView('extend')
+      flash(`Đã thêm ${ok.paths.length} video từ máy`)
+    } catch (e) {
+      flash(`Không mở được hộp chọn file: ${(e as Error).message}`)
     }
   }
 
@@ -722,16 +751,26 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                   «_keo_dai.mp4».
                 </span>
               </div>
-              {extendList.length > 0 && (
-                <button type="button" className="st-btn" onClick={() => setExtendList([])}>
-                  <Ico n="trash" size={13} /> Xoá danh sách
+              <div className="st-extend-actions">
+                <button type="button" className="st-btn ok" onClick={() => void addPcVideos()}>
+                  <Ico n="upload" size={13} /> Thêm video từ máy
                 </button>
-              )}
+                {extendList.length > 0 && (
+                  <button type="button" className="st-btn" onClick={() => setExtendList([])}>
+                    <Ico n="trash" size={13} /> Xoá danh sách
+                  </button>
+                )}
+              </div>
             </div>
             {extendList.length === 0 ? (
               <div className="st-extend-empty">
-                Chưa có video nào. Ở tab «Tạo video», bấm nút <Ico n="extend" size={13} /> trên
-                dòng video đã xong để chuyển sang đây.
+                Chưa có video nào. Bấm <b>Thêm video từ máy</b> để chọn video có sẵn trên PC, hoặc ở tab
+                «Tạo video» bấm nút <Ico n="extend" size={13} /> trên dòng video đã xong để chuyển sang đây.
+                <div>
+                  <button type="button" className="st-btn ok st-extend-add" onClick={() => void addPcVideos()}>
+                    <Ico n="upload" size={14} /> Thêm video từ máy
+                  </button>
+                </div>
               </div>
             ) : (
               extendList.map((it) => {

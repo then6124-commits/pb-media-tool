@@ -458,3 +458,5 @@
 .vids-table.st-grid[style*="--st-cols: 8"] tbody td:nth-child(6) { display: none; }
 .vids-table.st-grid[style*="--st-cols: 6"] tbody td:nth-child(7),
 .vids-table.st-grid[style*="--st-cols: 8"] tbody td:nth-child(7) { justify-self: start; padding-left: 10px !important; }
+.st-extend-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.st-extend-add { margin-top: 14px; padding: 8px 14px; }
