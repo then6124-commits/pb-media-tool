@@ -301,6 +301,47 @@ def chon_ref(prompt: str, refs: list[dict], tran: int = 10) -> list[str]:
 
 # ───────────────────────── hàng đợi Vids ─────────────────────────
 
+# Mã video Vids (48 hex trong token `c=` của URL tải) theo đường dẫn file đã tải về.
+# Lệnh KÉO DÀI gốc của Vids (op 378) cần mã này + đúng tài khoản đã tạo video.
+NGUON_VIDS = os.path.join(LOCAL, "PBMedia", "vids_nguon.json")
+_khoa_nguon = threading.Lock()
+
+
+def _khoa_file(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _doc_nguon() -> dict:
+    try:
+        with open(NGUON_VIDS, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def ghi_nguon(path: str, ma: str, email: str) -> None:
+    if not (path and ma):
+        return
+    with _khoa_nguon:
+        d = _doc_nguon()
+        d[_khoa_file(path)] = {"ma": ma, "email": email or "", "luc": int(time.time())}
+        try:
+            os.makedirs(os.path.dirname(NGUON_VIDS), exist_ok=True)
+            with open(NGUON_VIDS, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False, indent=1)
+        except OSError:
+            pass
+
+
+def tim_nguon(path: str) -> dict | None:
+    if not path:
+        return None
+    with _khoa_nguon:
+        r = _doc_nguon().get(_khoa_file(path))
+    return r if isinstance(r, dict) and r.get("ma") else None
+
+
 class HangVids:
     def __init__(self):
         self.jobs: dict[str, dict] = {}
@@ -429,7 +470,16 @@ class HangVids:
 
         ref_paths = chon_ref(j["prompt"], j["refs"])
         goc_ext = j.get("extend_from") or ""
-        if goc_ext:
+        nguon = tim_nguon(goc_ext) if goc_ext else None
+        j["extend_mode"] = ("goc" if nguon else "khung_cuoi") if goc_ext else ""
+        if nguon:
+            log("⏩ Kéo dài bằng lệnh gốc Vids (op %s) · mã %s… · TK %s" % (
+                getattr(gva, "VIDS_OP_KEO_DAI", 378), nguon["ma"][:12], nguon.get("email") or "?"),
+                "INFO", tag)
+            ref_paths = []
+        elif goc_ext:
+            log("⚠ Video này không có mã Vids (không tạo bằng tab Vids, hoặc tạo trước bản này) — "
+                "kéo dài tạm bằng khung cuối làm ảnh tham chiếu.", "WARN", tag)
             # Khung cuối của video gốc → ảnh tham chiếu duy nhất, prompt dặn nối liền mạch
             j["buoc"] = "lấy khung cuối"
             ext_dir = os.path.join(j["out_dir"], "_keo_dai")
@@ -450,14 +500,18 @@ class HangVids:
 
         loi_cuoi = ""
         for _lan in range(4):
-            email, ck = phien_tk(j["email"], self.het_quota)
+            email, ck = phien_tk((nguon or {}).get("email") or j["email"], self.het_quota)
+            if nguon and nguon.get("email") and email != nguon["email"]:
+                loi_cuoi = ("Kéo dài cần đúng tài khoản đã tạo video gốc (%s), nhưng tài khoản đó "
+                            "không dùng được (cookie trống hoặc hết hạn mức Vids)." % nguon["email"])
+                break
             if not ck:
                 loi_cuoi = ("Không có tài khoản nào dùng được (cookie trống hoặc "
                             "mọi TK đã hết hạn mức Vids). Thêm/lấy cookie ở tool cũ.")
                 break
             j["tk"] = email
             goc_prompt = j["prompt"]
-            if goc_ext:
+            if goc_ext and not nguon:
                 goc_prompt = ("Continue seamlessly from the attached reference image, which is the exact "
                               "last frame of the previous shot — same characters, outfits, location, "
                               "lighting and camera framing, no cut. Then: " + goc_prompt)
@@ -468,6 +522,14 @@ class HangVids:
             client = gva.GoogleVidsClient(cookies=ck, log=_log)
             client.account_email = email
             doc = j["doc_id"] if len(j["doc_id"]) >= 25 else None
+            if nguon:
+                try:
+                    client._body_ghi_de = gva.build_extend_body(
+                        gva.load_capture_overlay() or {}, ma_nguon=nguon["ma"], prompt=prompt,
+                        duration_sec=j["duration"], doc_id=doc or "")
+                except Exception as e:
+                    loi_cuoi = "Không dựng được lệnh kéo dài: %s" % e
+                    break
             try:
                 out = client.generate_video(
                     prompt=prompt, aspect=j["aspect"],
@@ -494,7 +556,25 @@ class HangVids:
                         out = dich
                 except Exception:
                     pass
-                if goc_ext:
+                ma_moi = str(getattr(client, "last_source_id", "") or "")
+                da_du = False
+                if nguon:
+                    d_goc, d_moi = _probe(goc_ext)["dur"], _probe(out)["dur"]
+                    da_du = d_goc > 0 and d_moi > d_goc + 1
+                    log("🎞 Gốc %.1fs · Vids trả %.1fs → %s" % (
+                        d_goc, d_moi, "đã gồm cả đoạn gốc" if da_du else "chỉ đoạn mới, nối lại"), "INFO", tag)
+                if goc_ext and da_du:
+                    noi = os.path.splitext(goc_ext)[0] + "_keo_dai.mp4"
+                    k = 2
+                    while os.path.exists(noi):
+                        noi = os.path.splitext(goc_ext)[0] + "_keo_dai_%d.mp4" % k
+                        k += 1
+                    try:
+                        os.replace(out, noi)
+                        out = noi
+                    except OSError:
+                        pass
+                elif goc_ext:
                     # Nối video gốc + đoạn kéo dài (dựng lại cho khớp khung/fps/âm thanh)
                     j["buoc"] = "nối video"
                     noi = os.path.splitext(goc_ext)[0] + "_keo_dai.mp4"
@@ -521,6 +601,10 @@ class HangVids:
                         out = noi
                     except Exception as e:
                         log("⚠ Không nối được video kéo dài (%s) — giữ riêng đoạn mới" % e, "WARN", tag)
+                if ma_moi:
+                    ghi_nguon(out, ma_moi, email)
+                    if j.get("clip_path"):
+                        ghi_nguon(j["clip_path"], ma_moi, email)
                 j.update(status="xong", buoc="xong", out_path=out, ket_thuc=time.time())
                 log("✅ Xong → %s" % out, "INFO", tag)
                 return
@@ -3467,6 +3551,9 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "logs": ra[-500:]})
             if u.path == "/api/vids/jobs":
                 return self._json(200, {"ok": True, "jobs": HANG.danh_sach()})
+            if u.path == "/api/vids/nguon":
+                r = tim_nguon((q.get("path") or [""])[0])
+                return self._json(200, {"ok": True, "co": bool(r), "email": (r or {}).get("email", "")})
             if u.path == "/api/vids/quota":
                 return self._json(200, {"ok": True, "items": han_muc_gan_nhat()})
             if u.path == "/api/tube/search":

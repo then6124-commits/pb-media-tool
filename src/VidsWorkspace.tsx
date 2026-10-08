@@ -192,6 +192,24 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   const imgRef = useRef<HTMLInputElement>(null)
   const nextId = useRef(100)
   const logSince = useRef(0)
+  const [nguonMap, setNguonMap] = useState<Record<string, { co: boolean; email: string }>>({})
+  useEffect(() => {
+    const thieu = extendList.map((x) => x.src).filter((src) => !(src in nguonMap))
+    if (!thieu.length) return
+    let dead = false
+    void Promise.all(
+      thieu.map((src) =>
+        api<{ co: boolean; email: string }>(`/api/vids/nguon?path=${encodeURIComponent(src)}`)
+          .then((r) => [src, { co: !!r.co, email: r.email || '' }] as const)
+          .catch(() => [src, { co: false, email: '' }] as const),
+      ),
+    ).then((ds) => {
+      if (!dead) setNguonMap((m) => ({ ...m, ...Object.fromEntries(ds) }))
+    })
+    return () => {
+      dead = true
+    }
+  }, [extendList, nguonMap])
 
   const active = projects.find((p) => p.id === activeId) || projects[0]
 
@@ -385,7 +403,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
         doc_id: docId,
         project: active?.name || 'du_an',
       })
-      flash('Đã gửi lệnh kéo dài — khung cuối của video gốc làm ảnh tham chiếu')
+      flash(nguonMap[it.src]?.co ? 'Đã gửi lệnh Kéo dài gốc của Vids' : 'Đã gửi lệnh kéo dài (khung cuối làm ảnh tham chiếu)')
     } catch (e) {
       flash(`Không gửi được: ${(e as Error).message}`)
     }
@@ -640,7 +658,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                 <strong>Kéo dài video</strong>
                 <span className="st-dim">
                   {' '}
-                  — khung cuối của video gốc làm ảnh tham chiếu, Vids dựng đoạn tiếp theo rồi tự nối thành một file
+                  — video tạo bằng tab Vids dùng lệnh Kéo dài gốc của Vids (cùng tài khoản); video khác dùng khung cuối làm ảnh tham chiếu. Kết quả lưu thành một file
                   «_keo_dai.mp4».
                 </span>
               </div>
@@ -665,6 +683,14 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                     <div className="st-extend-body">
                       <div className="st-extend-name" title={it.src}>
                         <Ico n="video" size={13} /> {it.src.split(/[\\/]/).pop()}
+                        {nguonMap[it.src] && (
+                          <span
+                            className={`st-ext-mode ${nguonMap[it.src].co ? 'goc' : ''}`}
+                            title={nguonMap[it.src].co ? `Tạo bởi ${nguonMap[it.src].email || 'tài khoản Vids'}` : 'Không có mã video Vids'}
+                          >
+                            {nguonMap[it.src].co ? 'Extend gốc Vids' : 'Khung cuối'}
+                          </span>
+                        )}
                         <button type="button" className="st-icon" title="Mở thư mục" onClick={() => openFileFolder(it.src)}>
                           <Ico n="folderopen" size={14} />
                         </button>

@@ -1356,6 +1356,7 @@ class GoogleVidsClient:
         # đường poll/tải, chỉ khác body. Đặt lại None ngay sau khi lấy
         # để lần gọi sau không vô tình dùng nhầm body cũ.
         body = getattr(self, "_body_ghi_de", None)
+        _la_keo_dai = body is not None
         if body is None:
             if getattr(self, "_account_goog_session", ""):
                 fields = dict(fields)
@@ -1476,7 +1477,9 @@ class GoogleVidsClient:
             # tu MOT tai khoan hom 01/10 — tai khoan khac dung chung bo do
             # thi Google co quyen tu choi.
             _da_cuu = False
-            if "REQUEST_REFUSED" in _than.upper():
+            # Lệnh KÉO DÀI không thử lại kiểu này: `_thu_bo_doc_muon` dựng lại
+            # body TẠO MỚI từ `fields` → ra một video khác hẳn, mất lượt.
+            if "REQUEST_REFUSED" in _than.upper() and not _la_keo_dai:
                 _r2 = self._thu_bo_doc_muon(ov, fields, url, headers)
                 if _r2 is not None and _r2.status_code < 400:
                     r, _da_cuu = _r2, True

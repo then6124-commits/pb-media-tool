@@ -304,3 +304,8 @@
   display: inline-flex; align-items: center; justify-content: center;
   background: rgba(239,68,68,0.12);
 }
+.st-ext-mode {
+  flex: none !important; font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+  background: rgba(234,179,8,0.12); color: #facc15;
+}
+.st-ext-mode.goc { background: rgba(var(--st-acc-rgb), 0.15); color: var(--st-acc); }
