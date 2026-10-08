@@ -6118,3 +6118,4 @@ textarea.flow-frame-box { width: 100%; resize: vertical; color: inherit; font: i
 .one-prompt-row { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin: 6px 0; }
 .va-card-title .one-prompt-right { float: right; margin-top: -3px; }
 .ta-prompt-wrap .ta-one-prompt { position: absolute; top: 8px; right: 96px; z-index: 2; background: rgba(15,23,42,0.6); }
+.inv-setup-err { color: #dc2626; font-size: 12px; line-height: 1.4; }

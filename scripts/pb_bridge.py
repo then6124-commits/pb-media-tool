@@ -2705,6 +2705,7 @@ def invideo_ds() -> list[dict]:
 
 
 def invideo_trang_thai() -> dict:
+    _nap_lai_path()   # công cụ vừa cài ngoài app cũng nhận ngay
     try:
         import faster_whisper  # type: ignore  # noqa: F401
         whisper = True
@@ -2714,6 +2715,63 @@ def invideo_trang_thai() -> dict:
     return {"ffmpeg": ffmpeg_ok(), "ytdlp": bool(shutil.which("yt-dlp")), "deno": bool(shutil.which("deno")),
             "whisper": whisper, "gemini": len(gemini_keys_an_toan()),
             "pexels": bool(cfg.get("pexels_key") or os.environ.get("PB_PEXELS_KEY"))}
+
+
+GOI_WINGET = {"ffmpeg": "Gyan.FFmpeg", "ytdlp": "yt-dlp.yt-dlp", "deno": "DenoLand.Deno"}
+
+
+def _nap_lai_path() -> None:
+    """winget cài xong thì PATH của tiến trình này vẫn là PATH cũ — đọc lại từ registry
+    (Máy + Người dùng) và thêm thư mục WinGet\\Links, để khỏi phải mở lại app."""
+    them = []
+    if os.name == "nt":
+        try:
+            import winreg
+            for goc, khoa in ((winreg.HKEY_LOCAL_MACHINE,
+                               r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                              (winreg.HKEY_CURRENT_USER, "Environment")):
+                try:
+                    with winreg.OpenKey(goc, khoa) as k:
+                        them += os.path.expandvars(winreg.QueryValueEx(k, "Path")[0]).split(os.pathsep)
+                except OSError:
+                    pass
+        except ImportError:
+            pass
+        them.append(os.path.join(LOCAL, "Microsoft", "WinGet", "Links"))
+    cu = os.environ.get("PATH", "").split(os.pathsep)
+    moi = [x for x in them if x and x not in cu]
+    if moi:
+        os.environ["PATH"] = os.pathsep.join(cu + moi)
+
+
+def invideo_cai_winget(goi: str) -> dict:
+    """winget install một công cụ (FFmpeg / yt-dlp / Deno) — một việc nền."""
+    ma = GOI_WINGET.get(goi)
+    if not ma:
+        raise RuntimeError("Không biết gói «%s»" % goi)
+    wg = shutil.which("winget")
+    if not wg:
+        raise RuntimeError("Máy chưa có winget — cài «App Installer» từ Microsoft Store, "
+                           "hoặc tự cài %s rồi bấm Kiểm tra lại." % ma)
+
+    def viec(v):
+        v["msg"] = "winget install %s…" % ma
+        r = subprocess.run([wg, "install", "--id", ma, "-e", "--silent",
+                            "--accept-source-agreements", "--accept-package-agreements"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=_KHONG_CUA_SO)
+        ra = (r.stdout or "") + (r.stderr or "")
+        # winget trả mã khác 0 cả khi gói ĐÃ cài sẵn — coi như xong.
+        da_co = re.search(r"already installed|đã được cài|No available upgrade", ra, re.I)
+        if r.returncode != 0 and not da_co:
+            dong = [x.strip() for x in ra.splitlines() if x.strip() and not set(x.strip()) <= set("-\\|/ █▒")]
+            raise RuntimeError("winget lỗi (mã %s): %s" % (r.returncode, " · ".join(dong[-3:])[:300]))
+        _nap_lai_path()
+        ten = {"ffmpeg": "ffmpeg", "ytdlp": "yt-dlp", "deno": "deno"}[goi]
+        v["msg"] = ("%s sẵn sàng" % ma) if shutil.which(ten) else (
+            "Đã cài %s — nếu vẫn báo thiếu, đóng mở lại app" % ma)
+        return ""
+    return _chay_nen("invideo-setup", goi, "", viec, "invideo")
 
 
 def invideo_cai_whisper() -> dict:
@@ -2734,7 +2792,7 @@ def invideo_cai_whisper() -> dict:
             raise RuntimeError((r.stderr or "tải model lỗi").strip()[-300:])
         v["msg"] = "Whisper sẵn sàng"
         return ""
-    return _chay_nen("invideo-setup", "faster-whisper", "", viec, "invideo")
+    return _chay_nen("invideo-setup", "whisper", "", viec, "invideo")
 
 
 # ───────────────────────── Grok (xAI API) ─────────────────────────
@@ -3900,6 +3958,8 @@ class XuLy(BaseHTTPRequestHandler):
             if u.path == "/api/invideo/setup":
                 if d.get("install") == "whisper":
                     return self._json(200, {"ok": True, **invideo_cai_whisper()})
+                if d.get("install"):
+                    return self._json(200, {"ok": True, **invideo_cai_winget(str(d.get("install")))})
                 return self._json(200, {"ok": True, **invideo_trang_thai()})
             if u.path == "/api/invideo/delete":
                 p = str(d.get("path") or "")

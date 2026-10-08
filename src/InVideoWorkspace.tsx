@@ -157,7 +157,7 @@ function ratioMeta(r: Ratio) {
   return { label: '1:1', wh: '1080 × 1080', cls: 'square' }
 }
 
-export default function InVideoWorkspace() {
+export default function InVideoWorkspace({ onOpenSettings }: { onOpenSettings?: () => void } = {}) {
   const [view, setView] = useState<View>('manager')
   const [showSetup, setShowSetup] = useState(false)
   const [setupDone, setSetupDone] = useState(() => readLS(LS_SETUP, false))
@@ -187,7 +187,8 @@ export default function InVideoWorkspace() {
   const logSince = useRef(0)
   const jobs = useJobs(['invideo', 'invideo-setup'])
   const running = jobs.filter((j) => j.loai === 'invideo' && j.status === 'dang_chay')
-  const setupJob = jobs.find((j) => j.loai === 'invideo-setup')
+  const setupJobOf = (id: string) => jobs.find((j) => j.loai === 'invideo-setup' && j.nguon === id)
+  const setupFinished = jobs.filter((j) => j.loai === 'invideo-setup' && j.status !== 'dang_chay').length
 
   const rMeta = ratioMeta(ratio)
   const doneJobs = jobs.filter((j) => j.loai === 'invideo' && j.status !== 'dang_chay').length
@@ -215,8 +216,8 @@ export default function InVideoWorkspace() {
   }, [doneJobs])
 
   useEffect(() => {
-    if (setupJob?.status === 'xong') void loadSetup()
-  }, [setupJob?.status])
+    if (setupFinished) void loadSetup()
+  }, [setupFinished])
 
   // Nhật ký: chỉ dòng tag «invideo» của cầu nối
   useEffect(() => {
@@ -289,10 +290,10 @@ export default function InVideoWorkspace() {
     }
   }
 
-  async function installWhisper() {
+  async function installTool(id: string, name: string) {
     try {
-      await api('/api/invideo/setup', { install: 'whisper' })
-      pushLog('INFO', 'Đang cài faster-whisper + tải model…')
+      await api('/api/invideo/setup', { install: id })
+      pushLog('INFO', id === 'whisper' ? 'Đang cài faster-whisper + tải model…' : `Đang cài ${name} bằng winget…`)
     } catch (e) {
       flash(errText(e))
     }
@@ -941,7 +942,7 @@ export default function InVideoWorkspace() {
                   ['ytdlp', 'yt-dlp', 'Tải video từ link', setup?.ytdlp, 'winget install yt-dlp.yt-dlp'],
                   ['deno', 'Deno', 'yt-dlp cần để giải mã YouTube', setup?.deno, 'winget install DenoLand.Deno'],
                   ['whisper', 'faster-whisper', 'Phiên âm cục bộ (không có thì dùng Gemini)', setup?.whisper, ''],
-                  ['gemini', 'Gemini key', `Viết kịch bản, TTS, dịch · ${setup?.gemini ?? 0} key`, !!setup?.gemini, 'Cài đặt › Tài khoản'],
+                  ['gemini', 'Gemini key', `Viết kịch bản, TTS, dịch · ${setup?.gemini ?? 0} key`, !!setup?.gemini, ''],
                   ['pexels', 'Pexels API key', 'Ảnh / video stock (miễn phí)', setup?.pexels, ''],
                 ] as const
               ).map(([id, name, desc, ok, hint]) => (
@@ -950,18 +951,33 @@ export default function InVideoWorkspace() {
                   <div className="inv-model-info">
                     <strong>{name}</strong>
                     <span>{desc}</span>
-                    {!ok && hint && <span className="muted">Cài: {hint}</span>}
-                    {id === 'whisper' && !ok && (
-                      <button
-                        type="button"
-                        className="inv-btn-ghost"
-                        disabled={setupJob?.status === 'dang_chay'}
-                        onClick={() => void installWhisper()}
-                      >
-                        {setupJob?.status === 'dang_chay' ? setupJob.msg || 'Đang cài…' : '⬇ Cài faster-whisper + model'}
+                    {!ok && hint && <span className="muted">Lệnh: {hint}</span>}
+                    {(id === 'ffmpeg' || id === 'ytdlp' || id === 'deno' || id === 'whisper') && !ok && (() => {
+                      const job = setupJobOf(id)
+                      return (
+                        <>
+                          <button
+                            type="button"
+                            className="inv-btn-ghost"
+                            disabled={job?.status === 'dang_chay'}
+                            onClick={() => void installTool(id, name)}
+                          >
+                            {job?.status === 'dang_chay'
+                              ? `⏳ ${job.msg || 'Đang cài…'}`
+                              : id === 'whisper'
+                                ? '⬇ Cài faster-whisper + model'
+                                : `⬇ Cài ${name}`}
+                          </button>
+                          {job?.status === 'loi' && <span className="inv-setup-err">❌ {job.msg}</span>}
+                          {job?.status === 'xong' && <span className="muted">✓ {job.msg}</span>}
+                        </>
+                      )
+                    })()}
+                    {id === 'gemini' && (
+                      <button type="button" className="inv-btn-ghost" onClick={() => onOpenSettings?.()}>
+                        {ok ? '⚙ Quản lý key trong Cài đặt' : '⚙ Thêm Gemini key trong Cài đặt › Cấu hình API'}
                       </button>
                     )}
-                    {id === 'whisper' && setupJob?.status === 'loi' && <span className="muted">❌ {setupJob.msg}</span>}
                     {id === 'pexels' && (
                       <div className="inv-link-row">
                         <input

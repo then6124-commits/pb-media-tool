@@ -149,7 +149,7 @@ export default function App() {
         ) : top === 'flow' ? (
           <FlowWorkspace />
         ) : top === 'invideo' ? (
-          <InVideoWorkspace />
+          <InVideoWorkspace onOpenSettings={() => { setTop('settings'); setSettingsPane('api') }} />
         ) : top === 'voice' ? (
           <VoiceWorkspace onOpenSettings={() => { setTop('settings'); setSettingsPane('advanced') }} />
         ) : top === 'ghep' ? (
