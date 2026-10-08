@@ -339,6 +339,9 @@ class HangVids:
                     "doc_id": str(d.get("doc_id") or "").strip(),
                     "email": str(d.get("email") or "").strip().lower(),
                     "out_dir": out_dir, "refs": list(d.get("refs") or []),
+                    # Kéo dài: video gốc — khung cuối làm ảnh tham chiếu, xong thì nối 2 đoạn
+                    "extend_from": str(d.get("extend_from") or "") if os.path.isfile(
+                        str(d.get("extend_from") or "")) else "",
                     "status": "cho", "buoc": "chờ", "error": "", "out_path": "",
                     "tk": "", "bat_dau": 0, "ket_thuc": 0,
                 }
@@ -425,6 +428,22 @@ class HangVids:
             log(s, "INFO", tag)
 
         ref_paths = chon_ref(j["prompt"], j["refs"])
+        goc_ext = j.get("extend_from") or ""
+        if goc_ext:
+            # Khung cuối của video gốc → ảnh tham chiếu duy nhất, prompt dặn nối liền mạch
+            j["buoc"] = "lấy khung cuối"
+            ext_dir = os.path.join(j["out_dir"], "_keo_dai")
+            os.makedirs(ext_dir, exist_ok=True)
+            khung = os.path.join(ext_dir, "%s_khung_cuoi.png" % jid)
+            try:
+                subprocess.run([_exe("ffmpeg"), "-y", "-v", "error", "-sseof", "-0.1", "-i", goc_ext,
+                                "-frames:v", "1", "-update", "1", khung], check=True,
+                               creationflags=_KHONG_CUA_SO)
+                ref_paths = [khung]
+            except Exception as e:
+                j.update(status="loi", buoc="lỗi", error="Không lấy được khung cuối: %s" % e,
+                         ket_thuc=time.time())
+                return
         if ref_paths:
             log("📎 %d ảnh tham chiếu: %s" % (len(ref_paths), ", ".join(
                 os.path.basename(p) for p in ref_paths)), "INFO", tag)
@@ -437,10 +456,15 @@ class HangVids:
                             "mọi TK đã hết hạn mức Vids). Thêm/lấy cookie ở tool cũ.")
                 break
             j["tk"] = email
+            goc_prompt = j["prompt"]
+            if goc_ext:
+                goc_prompt = ("Continue seamlessly from the attached reference image, which is the exact "
+                              "last frame of the previous shot — same characters, outfits, location, "
+                              "lighting and camera framing, no cut. Then: " + goc_prompt)
             try:
-                prompt = gva.ensure_duration_in_prompt(j["prompt"], j["duration"])
+                prompt = gva.ensure_duration_in_prompt(goc_prompt, j["duration"])
             except Exception:
-                prompt = j["prompt"]
+                prompt = goc_prompt
             client = gva.GoogleVidsClient(cookies=ck, log=_log)
             client.account_email = email
             doc = j["doc_id"] if len(j["doc_id"]) >= 25 else None
@@ -470,6 +494,33 @@ class HangVids:
                         out = dich
                 except Exception:
                     pass
+                if goc_ext:
+                    # Nối video gốc + đoạn kéo dài (dựng lại cho khớp khung/fps/âm thanh)
+                    j["buoc"] = "nối video"
+                    noi = os.path.splitext(goc_ext)[0] + "_keo_dai.mp4"
+                    k = 2
+                    while os.path.exists(noi):
+                        noi = os.path.splitext(goc_ext)[0] + "_keo_dai_%d.mp4" % k
+                        k += 1
+                    try:
+                        info = _probe(goc_ext)
+                        w, h = (info["w"] or 1280) // 2 * 2, (info["h"] or 720) // 2 * 2
+                        loc = ("[0:v]scale=%d:%d,setsar=1,fps=24[v0];[1:v]scale=%d:%d,setsar=1,fps=24[v1];"
+                               "[0:a]aresample=44100[a0];[1:a]aresample=44100[a1];"
+                               "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]" % (w, h, w, h))
+                        lenh = [_exe("ffmpeg"), "-y", "-v", "error", "-i", goc_ext, "-i", out]
+                        if not (info["audio"] and _probe(out)["audio"]):
+                            loc = ("[0:v]scale=%d:%d,setsar=1,fps=24[v0];[1:v]scale=%d:%d,setsar=1,fps=24[v1];"
+                                   "[v0][v1]concat=n=2:v=1:a=0[v]" % (w, h, w, h))
+                        lenh += ["-filter_complex", loc, "-map", "[v]"]
+                        if "[a]" in loc:
+                            lenh += ["-map", "[a]", "-c:a", "aac"]
+                        lenh += ["-c:v", "libx264", "-crf", "18", "-preset", "veryfast", noi]
+                        subprocess.run(lenh, check=True, creationflags=_KHONG_CUA_SO)
+                        j["clip_path"] = out
+                        out = noi
+                    except Exception as e:
+                        log("⚠ Không nối được video kéo dài (%s) — giữ riêng đoạn mới" % e, "WARN", tag)
                 j.update(status="xong", buoc="xong", out_path=out, ket_thuc=time.time())
                 log("✅ Xong → %s" % out, "INFO", tag)
                 return

@@ -29,6 +29,27 @@ type IcoName =
   | 'folder'
   | 'clock'
   | 'logout'
+  | 'video'
+  | 'image'
+  | 'wand'
+  | 'copy'
+  | 'pencil'
+  | 'external'
+  | 'play'
+  | 'xcircle'
+  | 'checkcircle'
+  | 'file'
+  | 'list'
+  | 'grid'
+  | 'upload'
+  | 'search'
+  | 'terminal'
+  | 'arrowup'
+  | 'arrowdown'
+  | 'key'
+  | 'x'
+  | 'folderopen'
+  | 'spin'
 
 const PATHS: Record<IcoName, string> = {
   user: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2 M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
@@ -51,6 +72,27 @@ const PATHS: Record<IcoName, string> = {
   folder: 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
   clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2',
   logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9',
+  video: 'M23 7l-7 5 7 5V7z M1 5h15v14H1z',
+  image: 'M3 3h18v18H3z M8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z M21 15l-5-5L5 21',
+  wand: 'M15 4V2 M15 16v-2 M8 9h2 M20 9h2 M17.8 11.8L19 13 M15 9h.01 M17.8 6.2L19 5 M3 21l9-9 M12.2 6.2L11 5',
+  copy: 'M9 9h13v13H9z M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
+  pencil: 'M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z',
+  external: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6 M15 3h6v6 M10 14L21 3',
+  play: 'M5 3l14 9-14 9V3z',
+  xcircle: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M15 9l-6 6 M9 9l6 6',
+  checkcircle: 'M22 11.08V12a10 10 0 1 1-5.93-9.14 M22 4L12 14.01l-3-3',
+  file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8',
+  list: 'M8 6h13 M8 12h13 M8 18h13 M3 6h.01 M3 12h.01 M3 18h.01',
+  grid: 'M3 3h7v7H3z M14 3h7v7h-7z M14 14h7v7h-7z M3 14h7v7H3z',
+  upload: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M17 8l-5-5-5 5 M12 3v12',
+  search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.35-4.35',
+  terminal: 'M4 17l6-6-6-6 M12 19h8',
+  arrowup: 'M12 19V5 M5 12l7-7 7 7',
+  arrowdown: 'M12 5v14 M19 12l-7 7-7-7',
+  key: 'M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78z M15.5 7.5l3 3L22 7l-3-3',
+  x: 'M18 6L6 18 M6 6l12 12',
+  folderopen: 'M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2',
+  spin: 'M21 12a9 9 0 1 1-6.22-8.56',
 }
 
 export function Ico({ n, size = 16, className = '' }: { n: IcoName; size?: number; className?: string }) {

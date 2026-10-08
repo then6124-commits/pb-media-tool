@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Ico } from './SettingsPanes'
+import './studio_sv.css'
 
 /**
  * Muse — chạy THẬT qua cầu nối Python (scripts/pb_bridge.py → K:\MUSE TOOL\muse_video.py).
@@ -246,14 +248,16 @@ export default function MuseWorkspace() {
 
   const logErrCount = useMemo(() => logs.filter((l) => l.level === 'LỖI').length, [logs])
 
+  const [sortDesc, setSortDesc] = useState(false)
+  const [gridView, setGridView] = useState(false)
   const filteredRows = useMemo(() => {
-    let list = rows
+    let list = sortDesc ? [...rows].reverse() : rows
     if (queueTab === 'done') list = list.filter((r) => r.status === 'xong')
     if (queueTab === 'error') list = list.filter((r) => r.status === 'loi')
     const q = search.trim().toLowerCase()
     if (q) list = list.filter((r) => r.prompt.toLowerCase().includes(q))
     return list
-  }, [rows, queueTab, search])
+  }, [rows, queueTab, search, sortDesc])
 
   const promptLines = useMemo(
     () => promptText.split('\n').map((l) => l.trim()).filter(Boolean),
@@ -419,6 +423,7 @@ export default function MuseWorkspace() {
       {!sideCollapsed && (
         <aside className="muse-side">
           <div className="muse-brand">
+            <span className="st-brand-ico"><Ico n="wand" size={16} /></span>
             <div>
               <div className="muse-brand-title">Muse</div>
               <div className="muse-brand-sub">muse.ai Studio</div>
@@ -441,7 +446,7 @@ export default function MuseWorkspace() {
                 className={`muse-proj ${p.id === activeId ? 'on' : ''}`}
                 onClick={() => setActiveId(p.id)}
               >
-                <span className="muse-proj-ico">✦</span>
+                <span className="muse-proj-ico"><Ico n="wand" size={15} /></span>
                 <span className="muse-proj-name">{p.name}</span>
               </button>
             ))}
@@ -457,22 +462,20 @@ export default function MuseWorkspace() {
             </button>
           )}
           <div className="muse-proj-title">
-            <span className="muse-proj-ico">✦</span>
+            <span className="st-title-ico"><Ico n="wand" size={17} /></span>
             <strong>{active?.name || '—'}</strong>
           </div>
-          <div className="muse-save">
-            <span className="muse-muted">Lưu vào</span>
-            <input
-              className="muse-path"
-              value={savePath}
-              placeholder="Mặc định: Videos\PB_MEDIA\Muse\<dự án>"
-              onChange={(e) => setSavePath(e.target.value)}
-            />
-            <button type="button" className="muse-icon-btn sm" onClick={() => void pickPath()} title="Chọn thư mục">
-              📁
+          <div className="st-save" title={savePath || 'Mặc định: Videos\\PB_MEDIA\\Muse\\<dự án>'}>
+            <button type="button" className="st-save-main" onClick={() => void pickPath()}>
+              <Ico n="folder" size={14} />
+              <span className="st-dim">Lưu vào</span>
+              <b>{savePath ? savePath.split(/[\\/]/).filter(Boolean).slice(-2).join('/') : 'Mặc định'}</b>
             </button>
-            <button type="button" className="muse-icon-btn sm" onClick={() => openFolder()} title="Mở thư mục lưu">
-              ↗
+            <button type="button" className="st-save-ico" title="Mở thư mục lưu" onClick={() => openFolder()}>
+              <Ico n="folderopen" size={14} />
+            </button>
+            <button type="button" className="st-save-ico" title="Dùng thư mục mặc định" onClick={() => setSavePath('')}>
+              <Ico n="x" size={14} />
             </button>
           </div>
           <button
@@ -481,10 +484,10 @@ export default function MuseWorkspace() {
             onClick={openChrome}
             title="Mở cửa sổ Chrome muse.ai của tool (đăng nhập lần đầu ở đây)"
           >
-            <span className={`muse-plug ${bridgeOk ? 'on' : ''}`}>🔌</span>
-            Chrome muse.ai
+            <span className={`muse-plug ${bridgeOk ? 'on' : ''}`}><Ico n="key" size={13} /></span>
+            Cookie muse.ai
           </button>
-          <label className="muse-muted" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <label className="muse-muted st-hide-chrome" title="Chạy Chrome muse.ai ẩn">
             <input type="checkbox" checked={hideChrome} onChange={(e) => setHideChrome(e.target.checked)} />
             Ẩn Chrome
           </label>
@@ -492,8 +495,8 @@ export default function MuseWorkspace() {
             <span className="muse-progress-ring" />
             {bridgeOk === false ? 'Cầu nối Python chưa chạy' : `${counts.done}/${counts.all} hoàn thành`}
           </div>
-          <button type="button" className="muse-bell" title="Nhật ký hoạt động" onClick={() => setShowLog(true)}>
-            🔔
+          <button type="button" className="muse-bell" title="Nhật ký hoạt động" onClick={() => setShowLog((v) => !v)}>
+            <Ico n="terminal" size={16} />
             {logErrCount > 0 && <span className="muse-bell-badge">{logErrCount}</span>}
           </button>
         </div>
@@ -503,26 +506,27 @@ export default function MuseWorkspace() {
             <div className="muse-prompt-head">
               <div className="muse-modes">
                 <button type="button" className={mode === 't2v' ? 'on' : ''} onClick={() => setMode('t2v')}>
-                  Text → Video
+                  <Ico n="video" size={14} /> Text → Video
                 </button>
                 <button type="button" className={mode === 'i2v' ? 'on' : ''} onClick={() => setMode('i2v')}>
-                  Ảnh → Video
+                  <Ico n="image" size={14} /> Ảnh → Video
                 </button>
                 <button type="button" className={mode === 't2i' ? 'on' : ''} onClick={() => setMode('t2i')}>
-                  Text → Ảnh
+                  <Ico n="wand" size={14} /> Text → Ảnh
                 </button>
               </div>
               <div className="muse-prompt-actions">
                 <button type="button" className="muse-ghost" onClick={() => fileRef.current?.click()}>
-                  Nạp TXT
+                  <Ico n="file" size={13} /> Nạp TXT
                 </button>
-                <span className="muse-ghost muted">{promptCount} job</span>
+                <span className="muse-ghost muted st-count">{promptCount} job</span>
                 <button type="button" className="muse-ghost" onClick={() => setCollapsed(true)}>
-                  Thu gọn ▴
+                  <Ico n="arrowup" size={12} /> Thu gọn
                 </button>
               </div>
             </div>
 
+            <div className="st-compose">
             <textarea
               className="muse-textarea"
               value={promptText}
@@ -533,13 +537,14 @@ export default function MuseWorkspace() {
 
             <div className="muse-ref-row">
               <button type="button" className="muse-ref-btn" onClick={() => imgRef.current?.click()}>
-                + Tải ảnh tham chiếu
+                <Ico n="upload" size={14} /> + Tải ảnh tham chiếu
               </button>
               <span className="muse-muted">
                 {mode === 'i2v'
                   ? 'Prompt gọi @tên thì dùng đúng ảnh đó; không gọi thì ảnh thứ i đi với prompt thứ i. Tối đa 8 ảnh.'
                   : 'Tuỳ chọn — gõ @tên trong prompt để gửi kèm ảnh đó. Tối đa 8 ảnh.'}
               </span>
+            </div>
             </div>
             {refs.length > 0 && (
               <div className="muse-ref-list">
@@ -564,7 +569,7 @@ export default function MuseWorkspace() {
                 </button>
               </div>
               <div className="muse-parallel-mini" title="Số cảnh gửi chung một tin — Rocky dựng song song">
-                <span>⟳</span>
+                <Ico n="spin" size={13} />
                 <select value={parallel} onChange={(e) => setParallel(Number(e.target.value))}>
                   {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
                     <option key={n} value={n}>
@@ -595,7 +600,7 @@ export default function MuseWorkspace() {
                 onClick={() => void runPrompts()}
                 disabled={!promptCount || needRefWarn}
               >
-                ▶ Chạy prompt (Ctrl+↵)
+                <Ico n="play" size={13} /> Chạy prompt <span className="st-kbd">(ctrl+↵)</span>
               </button>
             </div>
           </section>
@@ -625,35 +630,46 @@ export default function MuseWorkspace() {
               </button>
             </div>
             <div className="muse-queue-tools">
-              <input
-                className="muse-search"
-                placeholder="Tìm prompt..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              <button type="button" className="muse-ghost" onClick={selectAllFiltered}>
-                STT
+              <div className="st-search">
+                <Ico n="search" size={14} />
+                <input
+                  className="muse-search"
+                  placeholder="Tìm prompt..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+              <button type="button" className="st-btn" onClick={() => setSortDesc((v) => !v)} title="Đảo thứ tự">
+                <Ico n={sortDesc ? 'arrowdown' : 'arrowup'} size={13} /> STT
               </button>
-              <button type="button" className="muse-link ok" onClick={() => openFolder()}>
-                Mở thư mục ({counts.done})
+              <div className="st-viewtog">
+                <button type="button" className={!gridView ? 'on' : ''} onClick={() => setGridView(false)} title="Danh sách">
+                  <Ico n="list" size={14} />
+                </button>
+                <button type="button" className={gridView ? 'on' : ''} onClick={() => setGridView(true)} title="Lưới">
+                  <Ico n="grid" size={14} />
+                </button>
+              </div>
+              <button type="button" className="st-btn ok" onClick={() => openFolder()} title="Mở thư mục chứa video đã tải">
+                <Ico n="download" size={13} /> Tải tất cả ({counts.done})
               </button>
-              <button type="button" className="muse-link warn" onClick={retryErrors}>
-                Tạo lại lỗi ({counts.err})
+              <button type="button" className="st-btn warn" onClick={retryErrors}>
+                <Ico n="refresh" size={13} /> Tạo lại lỗi ({counts.err})
               </button>
-              <button type="button" className="muse-link info" onClick={retryPending}>
-                Tạo lại tất cả chưa tạo ({counts.all - counts.done})
+              <button type="button" className="st-btn info" onClick={retryPending}>
+                <Ico n="refresh" size={13} /> Tạo lại tất cả chưa tạo ({counts.all - counts.done})
               </button>
-              <button type="button" className="muse-link" onClick={clearDone}>
-                Xoá đã xong
+              <button type="button" className="st-btn" onClick={clearDone}>
+                <Ico n="refresh" size={13} /> Xoá đã xong
               </button>
-              <button type="button" className="muse-link danger" onClick={clearAll}>
-                Xoá toàn bộ
+              <button type="button" className="st-btn" onClick={clearAll}>
+                <Ico n="trash" size={13} /> Xoá toàn bộ
               </button>
             </div>
           </div>
 
           <div className="muse-table-wrap">
-            <table className="muse-table">
+            <table className={`muse-table${gridView ? ' st-grid' : ''}`}>
               <thead>
                 <tr>
                   <th style={{ width: 36 }}>
@@ -663,7 +679,9 @@ export default function MuseWorkspace() {
                       onChange={selectAllFiltered}
                     />
                   </th>
-                  <th style={{ width: 44 }}>#</th>
+                  <th style={{ width: 44 }}>
+                    # <Ico n={sortDesc ? 'arrowdown' : 'arrowup'} size={11} />
+                  </th>
                   <th style={{ width: 72 }}>MEDIA</th>
                   <th>PROMPT</th>
                   <th style={{ width: 130 }}>CHẾ ĐỘ</th>
@@ -689,27 +707,39 @@ export default function MuseWorkspace() {
                     <td className="muse-media">
                       {r.status === 'loi' ? (
                         <span className="muse-warn-tri" title="Lỗi">
-                          ⚠
+                          <Ico n="alert" size={18} />
                         </span>
                       ) : r.status === 'xong' && r.outPath ? (
-                        <a className="muse-media-ok" href={fileUrl(r.outPath)} target="_blank" rel="noreferrer" title={r.outPath}>
-                          ▶
+                        <a className="muse-media-ok st-thumb" href={fileUrl(r.outPath)} target="_blank" rel="noreferrer" title={r.outPath}>
+                          {/\.(png|jpe?g|webp)$/i.test(r.outPath) ? (
+                            <img src={fileUrl(r.outPath)} alt="" />
+                          ) : (
+                            <video src={`${fileUrl(r.outPath)}#t=1`} preload="metadata" muted />
+                          )}
+                          <span className="st-play"><Ico n="play" size={12} /></span>
                         </a>
                       ) : (
-                        <span className="muse-media-wait">…</span>
+                        <span className="muse-media-wait"><Ico n="spin" size={16} className={r.status === 'dang_chay' ? 'st-spin' : ''} /></span>
                       )}
                     </td>
                     <td className="muse-prompt-cell">
                       <div className="muse-prompt-text">{r.prompt}</div>
-                      {r.soAnh > 0 && <div className="muse-muted tiny">📎 {r.soAnh} ảnh</div>}
+                      {r.soAnh > 0 && (
+                        <div className="st-file">
+                          <Ico n="image" size={11} /> {r.soAnh} ảnh tham chiếu
+                        </div>
+                      )}
                       {r.status === 'xong' && r.outPath && (
-                        <div className="muse-muted tiny" title={r.outPath}>
-                          💾 {r.outPath.split(/[\\/]/).pop()}
+                        <div className="st-file" title={r.outPath}>
+                          <Ico n="folder" size={11} /> {r.outPath.split(/[\\/]/).pop()}
                         </div>
                       )}
                       {r.status === 'loi' && r.error && (
                         <div className="muse-err-box">
-                          <div>{r.error}</div>
+                          <div className="st-err-line">
+                            <Ico n="xcircle" size={12} />
+                            <span>{r.error}</span>
+                          </div>
                           {/sẵn sàng|đăng nhập|kết nối/i.test(r.error) && (
                             <button type="button" className="muse-cookie-link" onClick={openChrome}>
                               Mở Chrome muse.ai
@@ -719,7 +749,9 @@ export default function MuseWorkspace() {
                       )}
                     </td>
                     <td>
-                      <span className="muse-type">{modeLabel(r.mode, r.aspect)}</span>
+                      <span className="muse-type">
+                        <Ico n={r.mode === 't2i' ? 'image' : 'video'} size={11} /> {modeLabel(r.mode, r.aspect)}
+                      </span>
                     </td>
                     <td>
                       <div className="muse-time">{r.time}</div>
@@ -727,6 +759,11 @@ export default function MuseWorkspace() {
                     </td>
                     <td>
                       <span className={`muse-status ${r.status}`}>
+                        <Ico
+                          n={r.status === 'xong' ? 'checkcircle' : r.status === 'loi' ? 'xcircle' : 'spin'}
+                          size={12}
+                          className={r.status === 'dang_chay' ? 'st-spin' : ''}
+                        />
                         {r.status === 'loi'
                           ? 'Lỗi'
                           : r.status === 'xong'
@@ -737,22 +774,19 @@ export default function MuseWorkspace() {
                       </span>
                     </td>
                     <td className="muse-ops">
-                      <button
-                        type="button"
-                        title="Mở thư mục chứa file"
-                        disabled={r.status !== 'xong'}
-                        onClick={() => openFolder(r.outPath)}
-                      >
-                        ⬇
-                      </button>
-                      <button
-                        type="button"
-                        title="Chạy lại"
-                        disabled={r.status === 'dang_chay' || r.status === 'xong'}
-                        onClick={() => void retryIds([r.id], 'Chạy lại')}
-                      >
-                        ↻
-                      </button>
+                      {r.status === 'xong' && r.outPath && (
+                        <>
+                          <button type="button" title="Mở thư mục chứa file" onClick={() => openFolder(r.outPath)}>
+                            <Ico n="folder" size={15} />
+                          </button>
+                          <a className="st-op" title="Tải / mở file" href={fileUrl(r.outPath)} download>
+                            <Ico n="download" size={15} />
+                          </a>
+                          <a className="st-op" title="Xem ở tab mới" href={fileUrl(r.outPath)} target="_blank" rel="noreferrer">
+                            <Ico n="external" size={15} />
+                          </a>
+                        </>
+                      )}
                       <button
                         type="button"
                         title="Chép prompt"
@@ -761,7 +795,15 @@ export default function MuseWorkspace() {
                           flash('Đã chép prompt')
                         }}
                       >
-                        📋
+                        <Ico n="copy" size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        title="Chạy lại"
+                        disabled={r.status === 'dang_chay'}
+                        onClick={() => void retryIds([r.id], 'Chạy lại')}
+                      >
+                        <Ico n="refresh" size={15} />
                       </button>
                       <button
                         type="button"
@@ -774,7 +816,7 @@ export default function MuseWorkspace() {
                           flash('Đã đưa prompt lên khung nhập')
                         }}
                       >
-                        ✎
+                        <Ico n="pencil" size={15} />
                       </button>
                       <button
                         type="button"
@@ -782,7 +824,7 @@ export default function MuseWorkspace() {
                         disabled={r.status === 'dang_chay'}
                         onClick={() => deleteRows([r.id])}
                       >
-                        🗑
+                        <Ico n="trash" size={15} />
                       </button>
                     </td>
                   </tr>

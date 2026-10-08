@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Ico } from './SettingsPanes'
+import './studio_sv.css'
 
 type ProjKind = 'video' | 'nano'
 type Aspect = '16:9' | '9:16'
@@ -30,6 +32,7 @@ type QueueRow = {
   buoc?: string
   outPath?: string
   tk?: string
+  extendFrom?: string
 }
 
 type LogLine = {
@@ -55,7 +58,11 @@ type BridgeJob = {
   buoc: string
   out_path: string
   tk: string
+  extend_from?: string
 }
+
+/** Video gửi sang tab «Kéo dài»: video gốc + prompt cho đoạn nối tiếp. */
+type ExtendItem = { id: string; src: string; prompt: string; duration: number }
 
 const LS_PROJECTS = 'pb.vids.projects'
 const LS_ACTIVE = 'pb.vids.active'
@@ -161,6 +168,15 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   const [queueTab, setQueueTab] = useState<QueueTab>('all')
   const [search, setSearch] = useState('')
   const [collapsed, setCollapsed] = useState(() => loadJson(LS_COLLAPSED, false))
+  const [view, setView] = useState<'create' | 'extend'>('create')
+  const [extendList, setExtendList] = useState<ExtendItem[]>(() => loadJson('pb.vids.extend', [] as ExtendItem[]))
+  useEffect(() => {
+    try {
+      localStorage.setItem('pb.vids.extend', JSON.stringify(extendList))
+    } catch {
+      /* ignore */
+    }
+  }, [extendList])
   const [sideCollapsed, setSideCollapsed] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [newName, setNewName] = useState('')
@@ -220,12 +236,13 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
             stt: x.stt,
             prompt: x.prompt,
             aspect: x.aspect,
-            duration: `${x.duration}s`,
+            duration: x.duration ? `${x.duration}s` : '',
             status: x.status,
             error: x.error,
             buoc: x.buoc,
             outPath: x.out_path,
             tk: x.tk,
+            extendFrom: x.extend_from || undefined,
           })),
         )
         if (l.logs.length) {
@@ -269,14 +286,16 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
     [logs],
   )
 
+  const [sortDesc, setSortDesc] = useState(false)
+  const [gridView, setGridView] = useState(false)
   const filteredRows = useMemo(() => {
-    let list = rows
+    let list = sortDesc ? [...rows].reverse() : rows
     if (queueTab === 'done') list = list.filter((r) => r.status === 'xong')
     if (queueTab === 'error') list = list.filter((r) => r.status === 'loi' || r.status === 'tu_choi')
     const q = search.trim().toLowerCase()
     if (q) list = list.filter((r) => r.prompt.toLowerCase().includes(q))
     return list
-  }, [rows, queueTab, search])
+  }, [rows, queueTab, search, sortDesc])
 
   const parsePrompts = (text: string): string[] => {
     const joined = text.trim()
@@ -329,6 +348,46 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
       }
     } catch (e) {
       flash(`Không mở được hộp chọn thư mục: ${(e as Error).message}`)
+    }
+  }
+
+  /** Mở thư mục chứa một file (nút 📂 trên từng dòng). */
+  const openFileFolder = (path: string) => {
+    api('/api/open-folder', { path: path.replace(/[\\/][^\\/]*$/, '') }).catch(() => flash('Không mở được thư mục'))
+  }
+
+  /** Gửi video đã xong sang tab «Kéo dài». */
+  const sendToExtend = (r: QueueRow) => {
+    if (!r.outPath) return
+    setExtendList((prev) =>
+      prev.some((x) => x.src === r.outPath)
+        ? prev
+        : [{ id: `ext_${Date.now()}`, src: r.outPath!, prompt: '', duration: 8 }, ...prev],
+    )
+    setView('extend')
+    flash('Đã chuyển video sang tab Kéo dài')
+  }
+
+  const runExtend = async (it: ExtendItem) => {
+    if (!it.prompt.trim()) {
+      flash('Nhập prompt cho đoạn kéo dài')
+      return
+    }
+    try {
+      await api('/api/vids/start', {
+        prompts: [it.prompt.trim()],
+        extend_from: it.src,
+        aspect,
+        resolution,
+        duration: it.duration,
+        parallel,
+        out_dir: savePath,
+        doc_id: docId,
+        project: active?.name || 'du_an',
+      })
+      flash('Đã gửi lệnh kéo dài — khung cuối của video gốc làm ảnh tham chiếu')
+    } catch (e) {
+      flash(`Không gửi được: ${(e as Error).message}`)
     }
   }
 
@@ -474,6 +533,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
       {!sideCollapsed && (
         <aside className="vids-side">
           <div className="vids-brand">
+            <span className="st-brand-ico"><Ico n="wand" size={16} /></span>
             <div>
               <div className="vids-brand-title">Vids</div>
               <div className="vids-brand-sub">Video Studio</div>
@@ -507,7 +567,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                 onClick={() => setActiveId(p.id)}
               >
                 <span className="vids-proj-ico">
-                  {p.kind === 'video' ? '🎬' : '🖼️'}
+                  <Ico n={p.kind === 'video' ? 'video' : 'image'} size={15} />
                 </span>
                 <span className="vids-proj-name">{p.name}</span>
               </button>
@@ -529,27 +589,28 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
             </button>
           )}
           <div className="vids-proj-title">
-            <span className="vids-proj-ico">🎬</span>
+            <span className="st-title-ico"><Ico n="video" size={17} /></span>
             <strong>{active?.name || '—'}</strong>
           </div>
-          <div className="vids-save">
-            <span className="vids-muted">Lưu vào</span>
-            <input
-              className="vids-path"
-              value={savePath}
-              placeholder="Mặc định: Videos\PB_MEDIA\Vids\<dự án>"
-              onChange={(e) => setSavePath(e.target.value)}
-            />
-            <button type="button" className="vids-icon-btn sm" onClick={pickPath} title="Chọn thư mục">
-              📁
+          <div className="st-viewswitch">
+            <button type="button" className={view === 'create' ? 'on' : ''} onClick={() => setView('create')}>
+              <Ico n="video" size={13} /> Tạo video
             </button>
-            <button
-              type="button"
-              className="vids-icon-btn sm"
-              title="Mở thư mục lưu"
-              onClick={openFolder}
-            >
-              ↗
+            <button type="button" className={view === 'extend' ? 'on' : ''} onClick={() => setView('extend')}>
+              <Ico n="arrowup" size={13} className="st-rot90" /> Kéo dài{extendList.length ? ` (${extendList.length})` : ''}
+            </button>
+          </div>
+          <div className="st-save" title={savePath || 'Mặc định: Videos\\PB_MEDIA\\Vids\\<dự án>'}>
+            <button type="button" className="st-save-main" onClick={pickPath}>
+              <Ico n="folder" size={14} />
+              <span className="st-dim">Lưu vào</span>
+              <b>{savePath ? savePath.split(/[\\/]/).filter(Boolean).slice(-2).join('/') : 'Mặc định'}</b>
+            </button>
+            <button type="button" className="st-save-ico" title="Mở thư mục lưu" onClick={openFolder}>
+              <Ico n="folderopen" size={14} />
+            </button>
+            <button type="button" className="st-save-ico" title="Dùng thư mục mặc định" onClick={() => setSavePath('')}>
+              <Ico n="x" size={14} />
             </button>
           </div>
           <div className="vids-progress" title={account || ''}>
@@ -565,23 +626,146 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
             type="button"
             className="vids-bell"
             title="Nhật ký hoạt động"
-            onClick={() => setShowLog(true)}
+            onClick={() => setShowLog((v) => !v)}
           >
-            🔔
+            <Ico n="terminal" size={16} />
             {logErrCount > 0 && <span className="vids-bell-badge">{logErrCount}</span>}
           </button>
         </div>
 
+        {view === 'extend' && (
+          <section className="st-extend">
+            <div className="st-extend-head">
+              <div>
+                <strong>Kéo dài video</strong>
+                <span className="st-dim">
+                  {' '}
+                  — khung cuối của video gốc làm ảnh tham chiếu, Vids dựng đoạn tiếp theo rồi tự nối thành một file
+                  «_keo_dai.mp4».
+                </span>
+              </div>
+              {extendList.length > 0 && (
+                <button type="button" className="st-btn" onClick={() => setExtendList([])}>
+                  <Ico n="trash" size={13} /> Xoá danh sách
+                </button>
+              )}
+            </div>
+            {extendList.length === 0 ? (
+              <div className="st-extend-empty">
+                Chưa có video nào. Ở tab «Tạo video», bấm nút <Ico n="arrowup" size={12} className="st-rot90" /> trên
+                dòng video đã xong để chuyển sang đây.
+              </div>
+            ) : (
+              extendList.map((it) => {
+                const jobs = rows.filter((r) => r.extendFrom === it.src)
+                const last = jobs[0]
+                return (
+                  <div key={it.id} className="st-extend-card">
+                    <video className="st-extend-src" src={fileUrl(it.src)} controls preload="metadata" />
+                    <div className="st-extend-body">
+                      <div className="st-extend-name" title={it.src}>
+                        <Ico n="video" size={13} /> {it.src.split(/[\\/]/).pop()}
+                        <button type="button" className="st-icon" title="Mở thư mục" onClick={() => openFileFolder(it.src)}>
+                          <Ico n="folderopen" size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="st-icon red"
+                          title="Bỏ khỏi danh sách"
+                          onClick={() => setExtendList((prev) => prev.filter((x) => x.id !== it.id))}
+                        >
+                          <Ico n="trash" size={14} />
+                        </button>
+                      </div>
+                      <textarea
+                        className="vids-textarea st-extend-prompt"
+                        rows={3}
+                        value={it.prompt}
+                        onChange={(e) =>
+                          setExtendList((prev) => prev.map((x) => (x.id === it.id ? { ...x, prompt: e.target.value } : x)))
+                        }
+                        placeholder="Prompt cho đoạn tiếp theo — ví dụ: nhân vật quay lại nhìn máy, camera lùi chậm…"
+                      />
+                      <div className="st-extend-row">
+                        <div className="vids-parallel-mini" title="Thời lượng đoạn kéo dài">
+                          <Ico n="clock" size={13} />
+                          <select
+                            value={it.duration}
+                            onChange={(e) =>
+                              setExtendList((prev) =>
+                                prev.map((x) => (x.id === it.id ? { ...x, duration: Number(e.target.value) } : x)),
+                              )
+                            }
+                          >
+                            {[4, 5, 6, 7, 8, 9, 10].map((n) => (
+                              <option key={n} value={n}>
+                                {n}s
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {last && (
+                          <span className={`vids-status ${last.status === 'tu_choi' ? 'loi' : last.status}`}>
+                            <Ico
+                              n={last.status === 'xong' ? 'checkcircle' : last.status === 'loi' || last.status === 'tu_choi' ? 'xcircle' : 'spin'}
+                              size={12}
+                              className={last.status === 'dang_chay' ? 'st-spin' : ''}
+                            />
+                            {last.status === 'xong' ? 'Đã kéo dài' : last.status === 'dang_chay' ? last.buoc || 'Đang chạy' : last.status === 'cho' ? 'Chờ' : 'Lỗi'}
+                          </span>
+                        )}
+                        <span className="grow" />
+                        <button
+                          type="button"
+                          className="vids-run"
+                          disabled={!it.prompt.trim() || last?.status === 'dang_chay' || last?.status === 'cho'}
+                          onClick={() => void runExtend(it)}
+                        >
+                          <Ico n="play" size={13} /> Kéo dài
+                        </button>
+                      </div>
+                      {last?.status === 'loi' && last.error && <div className="st-err-line"><Ico n="xcircle" size={12} /> <span>{last.error}</span></div>}
+                      {last?.status === 'xong' && last.outPath && (
+                        <div className="st-extend-out">
+                          <video src={fileUrl(last.outPath)} controls preload="metadata" />
+                          <div className="st-file" title={last.outPath}>
+                            <Ico n="folder" size={11} /> {last.outPath.split(/[\\/]/).pop()}
+                            <button type="button" className="st-icon" title="Mở thư mục" onClick={() => openFileFolder(last.outPath!)}>
+                              <Ico n="folderopen" size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              className="st-icon"
+                              title="Kéo dài tiếp video này"
+                              onClick={() => sendToExtend(last)}
+                            >
+                              <Ico n="arrowup" size={14} className="st-rot90" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </section>
+        )}
+
+        {view === 'create' && (
+        <>
         <div className="vids-cfg">
           <div className="vids-cfg-item">
-            <label>SỐ PROMPT SONG SONG</label>
+            <label>
+              <Ico n="spin" size={12} /> SỐ PROMPT SONG SONG
+            </label>
             <div className="vids-parallel-wrap">
               <button
                 type="button"
                 className="vids-select"
                 onClick={() => setShowParallelMenu((v) => !v)}
               >
-                {parallel} luồng ▾
+                <Ico n="spin" size={13} /> {parallel} luồng <span className="st-caret">▾</span>
               </button>
               {showParallelMenu && (
                 <div className="vids-menu">
@@ -603,7 +787,9 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
             </div>
           </div>
           <div className="vids-cfg-item grow">
-            <label>GOOGLE DOC ID — Bỏ trống nếu dùng mặc định</label>
+            <label>
+              GOOGLE DOC ID <span className="st-dim">— Bỏ trống nếu dùng mặc định</span>
+            </label>
             <input
               className="vids-input"
               value={docId}
@@ -616,25 +802,26 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
         {!collapsed && (
           <section className="vids-prompt-card">
             <div className="vids-prompt-head">
-              <span className="vids-chip">Video {aspect}</span>
+              <span className="vids-chip"><Ico n="video" size={14} /> Video {aspect}</span>
               <div className="vids-prompt-actions">
                 <button
                   type="button"
                   className="vids-ghost"
                   onClick={() => fileRef.current?.click()}
                 >
-                  Nạp TXT
+                  <Ico n="file" size={13} /> Nạp TXT
                 </button>
-                <span className="vids-ghost muted">{promptCount} prompt</span>
+                <span className="vids-ghost muted st-count">{promptCount} prompt</span>
                 <button
                   type="button"
                   className="vids-ghost"
                   onClick={() => setCollapsed(true)}
                 >
-                  Thu gọn ▴
+                  <Ico n="arrowup" size={12} /> Thu gọn
                 </button>
               </div>
             </div>
+            <div className="st-compose">
             <textarea
               className="vids-textarea"
               value={promptText}
@@ -648,11 +835,12 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                 className="vids-ref-btn"
                 onClick={() => imgRef.current?.click()}
               >
-                + Tải ảnh tham chiếu
+                <Ico n="upload" size={14} /> + Tải ảnh tham chiếu
               </button>
               <span className="vids-muted">
-                Tải ảnh lên rồi gõ @tên trong prompt để AI tham chiếu nhân vật/bối cảnh
+                Tải ảnh lên rồi gõ <code className="st-at">@Tên</code> trong prompt để AI tham chiếu nhân vật/bối cảnh.
               </span>
+            </div>
             </div>
             {refs.length > 0 && (
               <div className="vids-ref-list">
@@ -686,8 +874,8 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                   9:16 Dọc
                 </button>
               </div>
-              <div className="vids-parallel-mini">
-                <span>👤</span>
+              <div className="vids-parallel-mini" title="Số prompt song song">
+                <Ico n="spin" size={13} />
                 <select
                   value={parallel}
                   onChange={(e) => setParallel(Number(e.target.value))}
@@ -700,7 +888,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                 </select>
               </div>
               <div className="vids-parallel-mini" title="Thời lượng mỗi video">
-                <span>⏱</span>
+                <Ico n="clock" size={13} />
                 <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
                   {[4, 5, 6, 7, 8, 9, 10].map((n) => (
                     <option key={n} value={n}>
@@ -729,7 +917,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                 onClick={runPrompts}
                 disabled={!promptCount}
               >
-                ▶ Chạy prompt (ctrl+↵)
+                <Ico n="play" size={13} /> Chạy prompt <span className="st-kbd">(ctrl+↵)</span>
               </button>
             </div>
           </section>
@@ -770,29 +958,40 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
               </button>
             </div>
             <div className="vids-queue-tools">
-              <input
-                className="vids-search"
-                placeholder="Tìm prompt..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              <button type="button" className="vids-ghost" onClick={selectAllFiltered}>
-                STT
+              <div className="st-search">
+                <Ico n="search" size={14} />
+                <input
+                  className="vids-search"
+                  placeholder="Tìm prompt..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+              <button type="button" className="st-btn" onClick={() => setSortDesc((v) => !v)} title="Đảo thứ tự">
+                <Ico n={sortDesc ? 'arrowdown' : 'arrowup'} size={13} /> STT
               </button>
-              <button type="button" className="vids-link warn" onClick={retryErrors}>
-                Tạo lại lỗi ({counts.err})
+              <div className="st-viewtog">
+                <button type="button" className={!gridView ? 'on' : ''} onClick={() => setGridView(false)} title="Danh sách">
+                  <Ico n="list" size={14} />
+                </button>
+                <button type="button" className={gridView ? 'on' : ''} onClick={() => setGridView(true)} title="Lưới">
+                  <Ico n="grid" size={14} />
+                </button>
+              </div>
+              <button type="button" className="st-btn warn" onClick={retryErrors}>
+                <Ico n="refresh" size={13} /> Tạo lại lỗi ({counts.err})
               </button>
-              <button type="button" className="vids-link info" onClick={retryPending}>
-                Tạo lại tất cả chưa tạo ({counts.all - counts.done})
+              <button type="button" className="st-btn info" onClick={retryPending}>
+                <Ico n="refresh" size={13} /> Tạo lại tất cả chưa tạo ({counts.all - counts.done})
               </button>
-              <button type="button" className="vids-link danger" onClick={clearAll}>
-                Xoá toàn bộ
+              <button type="button" className="st-btn" onClick={clearAll}>
+                <Ico n="trash" size={13} /> Xoá toàn bộ
               </button>
             </div>
           </div>
 
           <div className="vids-table-wrap">
-            <table className="vids-table">
+            <table className={`vids-table${gridView ? ' st-grid' : ''}`}>
               <thead>
                 <tr>
                   <th style={{ width: 36 }}>
@@ -805,7 +1004,9 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                       onChange={selectAllFiltered}
                     />
                   </th>
-                  <th style={{ width: 44 }}>#</th>
+                  <th style={{ width: 44 }}>
+                    # <Ico n={sortDesc ? 'arrowdown' : 'arrowup'} size={11} />
+                  </th>
                   <th style={{ width: 72 }}>MEDIA</th>
                   <th>PROMPT</th>
                   <th style={{ width: 72 }}>LOẠI</th>
@@ -837,53 +1038,70 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                     <td className="vids-media">
                       {r.status === 'loi' || r.status === 'tu_choi' ? (
                         <span className="vids-warn-tri" title="Lỗi">
-                          ⚠
+                          <Ico n="alert" size={18} />
                         </span>
                       ) : r.status === 'xong' && r.outPath ? (
                         <a
-                          className="vids-media-ok"
+                          className="vids-media-ok st-thumb"
                           href={fileUrl(r.outPath)}
                           target="_blank"
                           rel="noreferrer"
                           title={r.outPath}
                         >
-                          ▶
+                          <video src={`${fileUrl(r.outPath)}#t=1`} preload="metadata" muted />
+                          <span className="st-play"><Ico n="play" size={12} /></span>
                         </a>
                       ) : (
-                        <span className="vids-media-wait">…</span>
+                        <span className="vids-media-wait"><Ico n="spin" size={16} className={r.status === 'dang_chay' ? 'st-spin' : ''} /></span>
                       )}
                     </td>
                     <td className="vids-prompt-cell">
+                      {r.extendFrom && (
+                        <span className="st-ext-tag" title={r.extendFrom}>
+                          <Ico n="arrowup" size={10} className="st-rot90" /> Kéo dài từ {r.extendFrom.split(/[\\/]/).pop()}
+                        </span>
+                      )}
                       <div className="vids-prompt-text">{r.prompt}</div>
                       {r.status === 'xong' && r.outPath && (
-                        <div className="vids-muted" style={{ fontSize: 11 }}>
-                          {r.outPath}
+                        <div className="st-file" title={r.outPath}>
+                          <Ico n="folder" size={11} /> {r.outPath.split(/[\\/]/).pop()}
                           {r.tk ? ` · ${r.tk}` : ''}
                         </div>
                       )}
                       {(r.status === 'loi' || r.status === 'tu_choi') && r.error && (
                         <div className="vids-err-box">
-                          <div style={{ whiteSpace: 'pre-wrap' }}>{r.error}</div>
+                          <div className="st-err-line">
+                            <Ico n={/cookie|SESSION_COOKIE|401/i.test(r.error) ? 'key' : 'xcircle'} size={12} />
+                            <span>{r.error}</span>
+                          </div>
                           {/cookie|SESSION_COOKIE|401/i.test(r.error) && (
                             <button
                               type="button"
                               className="vids-cookie-link"
                               onClick={() => onOpenSettings?.()}
                             >
-                              Đổi cookie trong Cài đặt
+                              <Ico n="key" size={11} /> Đổi cookie trong Cài đặt
                             </button>
                           )}
                         </div>
                       )}
                     </td>
                     <td>
-                      <span className="vids-type">{r.aspect}</span>
+                      <span className="vids-type"><Ico n="video" size={11} /> {r.aspect}</span>
                     </td>
-                    <td>{r.duration}</td>
+                    <td className="st-time">
+                      <div>–</div>
+                      <div className="st-dim">{r.duration}</div>
+                    </td>
                     <td>
                       <span
                         className={`vids-status ${r.status === 'tu_choi' ? 'loi' : r.status}`}
                       >
+                        <Ico
+                          n={r.status === 'xong' ? 'checkcircle' : r.status === 'loi' || r.status === 'tu_choi' ? 'xcircle' : 'spin'}
+                          size={12}
+                          className={r.status === 'dang_chay' ? 'st-spin' : ''}
+                        />
                         {r.status === 'loi'
                           ? 'Lỗi'
                           : r.status === 'tu_choi'
@@ -898,27 +1116,35 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                     <td className="vids-ops">
                       <button
                         type="button"
-                        title="Chạy lại"
-                        disabled={r.status === 'dang_chay'}
-                        onClick={() => retryIds([r.id], 'Chạy lại')}
-                      >
-                        ↻
-                      </button>
-                      {r.status === 'xong' && r.outPath && (
-                        <button type="button" title="Upscale x2 (realesrgan)" onClick={() => void upscale(r.outPath!)}>
-                          ⇧
-                        </button>
-                      )}
-                      <button
-                        type="button"
                         title="Chép prompt"
                         onClick={() => {
                           navigator.clipboard?.writeText(r.prompt).catch(() => {})
                           flash('Đã chép prompt')
                         }}
                       >
-                        📋
+                        <Ico n="copy" size={15} />
                       </button>
+                      <button
+                        type="button"
+                        title="Chạy lại"
+                        disabled={r.status === 'dang_chay'}
+                        onClick={() => retryIds([r.id], 'Chạy lại')}
+                      >
+                        <Ico n="refresh" size={15} />
+                      </button>
+                      {r.status === 'xong' && r.outPath && (
+                        <>
+                          <button type="button" title="Mở thư mục chứa video" onClick={() => openFileFolder(r.outPath!)}>
+                            <Ico n="folderopen" size={15} />
+                          </button>
+                          <button type="button" className="st-op-extend" title="Chuyển sang tab Kéo dài" onClick={() => sendToExtend(r)}>
+                            <Ico n="arrowup" size={15} className="st-rot90" />
+                          </button>
+                          <button type="button" title="Upscale x2 (realesrgan)" onClick={() => void upscale(r.outPath!)}>
+                            <Ico n="upload" size={15} />
+                          </button>
+                        </>
+                      )}
                       <button
                         type="button"
                         title="Sửa"
@@ -928,7 +1154,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                           flash('Đã đưa prompt lên khung nhập')
                         }}
                       >
-                        ✎
+                        <Ico n="pencil" size={15} />
                       </button>
                       <button
                         type="button"
@@ -936,7 +1162,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                         disabled={r.status === 'dang_chay'}
                         onClick={() => deleteRows([r.id])}
                       >
-                        🗑
+                        <Ico n="trash" size={15} />
                       </button>
                     </td>
                   </tr>
@@ -945,6 +1171,8 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
             </table>
           </div>
         </section>
+        </>
+        )}
       </div>
 
       {showLog && (
