@@ -49,10 +49,40 @@ async function goVao(page, selectors, text) {
   return false;
 }
 
+/** Chờ tới khi có ô nhập hiện ra (trang x.ai là SPA, tải chậm) rồi gõ vào. */
+async function choVaGo(page, selectors, text, ms = 25000) {
+  const het = Date.now() + ms;
+  while (Date.now() < het) {
+    if (await goVao(page, selectors, text)) return true;
+    await sleep(700);
+  }
+  return false;
+}
+
+/** Đóng bảng cookie của x.ai (che mất nút). */
+async function dongBangCookie(page) {
+  await page.evaluate(() => {
+    const chu = /^(reject all|accept all cookies|accept all|từ chối tất cả|chấp nhận tất cả)$/i;
+    const b = Array.from(document.querySelectorAll('button')).find((x) => chu.test((x.innerText || '').trim()));
+    if (b) b.click();
+  }).catch(() => {});
+}
+
+/** Bấm nút có chữ khớp regex (vd «Login with email»). */
+async function bamChu(page, re) {
+  return page.evaluate((src) => {
+    const r = new RegExp(src, 'i');
+    const b = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+      .find((x) => x.offsetParent !== null && r.test((x.innerText || '').trim()));
+    if (b) { b.click(); return true; }
+    return false;
+  }, re.source).catch(() => false);
+}
+
 /** Bấm nút gửi form: nút submit, hoặc nút có chữ Next/Tiếp/Sign in/Đăng nhập/Continue. */
 async function bamTiep(page) {
   const ok = await page.evaluate(() => {
-    const chu = /^(next|tiếp|tiếp tục|continue|sign in|log in|login|đăng nhập)$/i;
+    const chu = /^(next|tiếp|tiếp theo|tiếp tục|continue|sign in|log in|login|đăng nhập)$/i;
     const nut = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'))
       .filter((b) => b.offsetParent !== null && !b.disabled);
     const hop = nut.find((b) => chu.test((b.innerText || b.value || '').trim()))
@@ -116,19 +146,35 @@ async function main() {
   if (!coSso(await layCookie())) {
     log('Mở trang đăng nhập x.ai');
     try {
-      await page.goto('https://accounts.x.ai/sign-in?redirect=grok-com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+      // email=true → vào thẳng form «Log in with your email», khỏi màn chọn Google/X/Email
+      await page.goto('https://accounts.x.ai/sign-in?redirect=grok-com&email=true', {
+        waitUntil: 'domcontentloaded', timeout: 60000,
+      });
     } catch (e) { /* */ }
-    await sleep(3000);
+    await sleep(1500);
+    await dongBangCookie(page);
+    const O_EMAIL = ['input[type="email"]', 'input[name="email"]', 'input[autocomplete="email"]',
+      'input[autocomplete="username"]', 'form input[type="text"]', 'input:not([type="hidden"]):not([type="password"])'];
     if (email) {
-      const daGo = await goVao(page, ['input[type="email"]', 'input[name="email"]', 'input[autocomplete="email"]',
-        'input[autocomplete="username"]'], email);
+      let daGo = await choVaGo(page, O_EMAIL, email, 12000);
+      if (!daGo) {
+        // Còn ở màn chọn cách đăng nhập → bấm «Login with email» rồi thử lại
+        await bamChu(page, /(log ?in|sign ?in|continue) with email|email/);
+        daGo = await choVaGo(page, O_EMAIL, email, 15000);
+      }
       log(daGo ? 'Đã điền email' : 'Không thấy ô email — điền tay trong cửa sổ Chrome');
-      if (daGo && !(await page.$('input[type="password"]'))) { await bamTiep(page); await sleep(2500); }
+      if (daGo) {
+        await dongBangCookie(page);
+        await bamTiep(page);
+      }
     }
     if (password) {
-      const daGo = await goVao(page, ['input[type="password"]', 'input[name="password"]'], password);
+      const daGo = await choVaGo(page, ['input[type="password"]', 'input[name="password"]'], password, 30000);
       log(daGo ? 'Đã điền mật khẩu' : 'Không thấy ô mật khẩu — điền tay trong cửa sổ Chrome');
-      if (daGo) { await bamTiep(page); }
+      if (daGo) {
+        await dongBangCookie(page);
+        await bamTiep(page);
+      }
     }
     log('Chờ đăng nhập xong (captcha/mã xác minh thì bấm tay trong Chrome)…');
   }
