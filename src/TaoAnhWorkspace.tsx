@@ -1,6 +1,7 @@
 import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './tao_anh.css'
+import { useJobs } from './bridge'
 import DrawEngineModal, {
   DEFAULT_DRAW_CONFIG,
   type DrawEngineConfig,
@@ -413,14 +414,24 @@ export default function TaoAnhWorkspace() {
 
   /** Video vẽ tay từ ảnh (scripts/draw_engine.py) theo cấu hình Draw đang chọn. */
   function veTay(path: string) {
-    api('/api/draw', { path, cfg: drawCfg })
+    api('/api/draw', { path, cfg: { ...drawCfg, force: true }, tag: 'anh' })
       .then(() => flash(`Đang dựng video vẽ tay (${drawCfg.drawSec}s) — file *_draw.mp4 cạnh ảnh`))
       .catch((e) => flash(`Không dựng được: ${(e as Error).message}`))
   }
 
+  // Việc dựng video vẽ tay (bridge «draw») theo đường dẫn ảnh → trạng thái hiện trên thẻ
+  const drawJobs = useJobs(['draw'])
+  const veTayCua = (f: string) => drawJobs.find((j) => j.nguon === f)
+
   // Ô «🎨 Draw» bật: ảnh vừa xong thì tự dựng video vẽ tay (một lần mỗi file).
-  const daVe = useRef<Set<string>>(new Set())
+  // Ảnh đã xong từ trước khi mở tab thì không tự dựng lại (bấm ✍ nếu muốn).
+  const daVe = useRef<Set<string> | null>(null)
   useEffect(() => {
+    if (daVe.current === null) {
+      if (!results.length) return // chờ danh sách kết quả tải về rồi mới ghi nhớ ảnh cũ
+      daVe.current = new Set(results.filter((r) => r.status === 'done' && r.files[0]).map((r) => r.files[0]))
+      return
+    }
     if (!draw) return
     for (const r of results) {
       const f = r.files[0]
@@ -797,6 +808,19 @@ export default function TaoAnhWorkspace() {
                           {r.files[0] ? (
                             <div className="ta-card-mail" title={r.files[0]}>💾 {r.files[0].split(/[\\/]/).pop()}</div>
                           ) : null}
+                          {r.files[0] &&
+                            (() => {
+                              const j = veTayCua(r.files[0])
+                              if (!j) return null
+                              if (j.status === 'dang_chay')
+                                return <div className="ta-draw run">✍ Đang dựng video vẽ tay… {j.msg && j.msg !== 'Chuẩn bị…' ? `(${j.msg})` : ''}</div>
+                              if (j.status === 'loi') return <div className="ta-draw err" title={j.msg}>✍ Vẽ tay lỗi: {j.msg}</div>
+                              return (
+                                <a className="ta-draw ok" href={fileUrl(j.out_path)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                                  ▶ Xem video vẽ tay
+                                </a>
+                              )
+                            })()}
                         </>
                       )}
                       <div className="ta-card-snip">{snippet(r.text)}</div>

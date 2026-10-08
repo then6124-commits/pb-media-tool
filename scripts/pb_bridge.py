@@ -1434,16 +1434,47 @@ class ViecPhu:
 VIEC = ViecPhu()
 
 
-def ve_tay(path: str, cfg: dict) -> dict:
+def _draw_engine():
+    """draw_engine cần OpenCV + numpy — máy chưa có thì tự pip install một lần."""
+    try:
+        import draw_engine
+        return draw_engine
+    except ImportError as e:
+        if "cv2" not in str(e) and "numpy" not in str(e):
+            raise
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "opencv-python-headless", "numpy"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=_KHONG_CUA_SO)
+        if r.returncode != 0:
+            raise RuntimeError("Thiếu OpenCV và không tự cài được: " + (r.stderr or "pip lỗi").strip()[-200:])
+        import importlib
+        importlib.invalidate_caches()
+        import draw_engine
+        return draw_engine
+
+
+def ve_tay(path: str, cfg: dict, tag: str = "util") -> dict:
     """Video vẽ tay từ một ảnh (scripts/draw_engine.py) — chạy nền như upscale."""
     if not os.path.isfile(path):
         raise RuntimeError("Không thấy ảnh: %s" % path)
-    import draw_engine
     v = VIEC._moi("draw", path)
+    v["msg"] = "Chuẩn bị…"
     ra = os.path.splitext(path)[0] + "_draw.mp4"
+    if not cfg.get("force") and os.path.isfile(ra) and os.path.getmtime(ra) >= os.path.getmtime(path):
+        # Đã dựng rồi (ảnh không đổi) → trả luôn, khỏi dựng lại
+        v.update(status="xong", out_path=ra, msg="Đã có sẵn")
+        return v
+    log("✍ Dựng video vẽ tay: %s" % os.path.basename(path), "INFO", tag)
 
     def chay():
         try:
+            try:
+                import draw_engine  # noqa: F401
+            except ImportError:
+                v["msg"] = "Cài OpenCV (một lần)…"
+                log("⬇ Máy chưa có OpenCV — đang tự cài (một lần)…", "INFO", tag)
+            draw_engine = _draw_engine()
+            v["msg"] = "Đang vẽ…"
             def _f(k, mac_dinh):
                 try:
                     return float(cfg.get(k, mac_dinh))
@@ -1462,11 +1493,11 @@ def ve_tay(path: str, cfg: dict) -> dict:
                 bg=str(cfg.get("bgPreset") or "cream"),
                 bg_color=str(cfg.get("bgColor") or draw_engine.MAU_NEN_SV),
                 hand_id=str(cfg.get("handId") or ""),
-                log=lambda m: log(m, "INFO", "util"))
+                log=lambda m: log(m, "INFO", tag))
             v.update(status="xong", out_path=ra, msg="Xong")
         except Exception as e:
             v.update(status="loi", msg=str(e)[:300])
-            log("❌ Vẽ tay lỗi: %s" % e, "LỖI", "util")
+            log("❌ Vẽ tay lỗi: %s" % e, "LỖI", tag)
 
     threading.Thread(target=chay, daemon=True).start()
     return v
@@ -4058,7 +4089,8 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, **VIEC.tai_video(url, str(d.get("out_dir") or ""))})
             if u.path == "/api/draw":
                 return self._json(200, {"ok": True, **ve_tay(str(d.get("path") or ""),
-                                                            dict(d.get("cfg") or {}))})
+                                                            dict(d.get("cfg") or {}),
+                                                            str(d.get("tag") or "util"))})
             if u.path == "/api/util/upscale":
                 return self._json(200, {"ok": True, **VIEC.upscale(
                     str(d.get("path") or ""), int(d.get("scale") or 2), str(d.get("model") or ""))})
