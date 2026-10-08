@@ -50,6 +50,8 @@ type IcoName =
   | 'x'
   | 'folderopen'
   | 'spin'
+  | 'sliders'
+  | 'extend'
 
 const PATHS: Record<IcoName, string> = {
   user: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2 M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
@@ -93,6 +95,8 @@ const PATHS: Record<IcoName, string> = {
   x: 'M18 6L6 18 M6 6l12 12',
   folderopen: 'M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2',
   spin: 'M21 12a9 9 0 1 1-6.22-8.56',
+  sliders: 'M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 16h6',
+  extend: 'M2 6h11v12H2z M13 10l4-2.5v9L13 14 M20 9v6 M17 12h6',
 }
 
 export function Ico({ n, size = 16, className = '' }: { n: IcoName; size?: number; className?: string }) {
