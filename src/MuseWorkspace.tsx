@@ -1,4 +1,4 @@
-import { ClearPromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
+import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Ico } from './SettingsPanes'
 import './studio_sv.css'
@@ -518,6 +518,7 @@ export default function MuseWorkspace() {
                 <button type="button" className="muse-ghost" onClick={() => fileRef.current?.click()}>
                   <Ico n="file" size={13} /> Nạp TXT
                 </button>
+                <PastePromptBtn value={promptText} setValue={setPromptText} />
                 <ClearPromptBtn value={promptText} setValue={setPromptText} />
                 <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
                 <span className="muse-ghost muted st-count">{promptCount} job</span>

@@ -1,4 +1,4 @@
-import { ClearPromptBtn, OnePromptCheck, cleanPromptFile, extractPromptBlocks, splitPrompts, useOnePrompt } from './OnePrompt'
+import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, extractPromptBlocks, splitPrompts, useOnePrompt } from './OnePrompt'
 import {
   useCallback,
   useEffect,
@@ -1070,6 +1070,7 @@ export default function Veo3Workspace() {
             </select>
             <span className="t2v-chev" aria-hidden>▾</span>
           </div>
+          {t2vFiles.length === 0 && <PastePromptBtn value={prompt} setValue={(v) => { setPrompt(v); setPromptFileName(null) }} />}
           {t2vFiles.length === 0 && <ClearPromptBtn value={prompt} setValue={(v) => { setPrompt(v); setPromptFileName(null) }} />}
           {t2vFiles.length === 0 && <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />}
           <span className="t2v-count" title={promptFileName ?? undefined}>
@@ -1563,6 +1564,7 @@ export default function Veo3Workspace() {
               setChars((list) => list.map((x) => (x.id === id ? { ...x, image: item } : x)))
             }} />
             <div className="one-prompt-row">
+              <PastePromptBtn value={charPrompt} setValue={setCharPrompt} />
               <ClearPromptBtn value={charPrompt} setValue={setCharPrompt} />
               <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
             </div>

@@ -122,3 +122,48 @@ export function ClearPromptBtn({ value, setValue }: { value: string; setValue: (
     </button>
   )
 }
+
+/** Đọc clipboard: API của trình duyệt, không được thì nhờ cầu nối Python. */
+async function docClipboard(): Promise<string> {
+  try {
+    const t = await navigator.clipboard.readText()
+    if (t) return t
+  } catch {
+    /* webview chặn → hỏi cầu nối */
+  }
+  const res = await fetch('/api/clipboard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+  const j = (await res.json()) as { text?: string }
+  return j.text || ''
+}
+
+/** Nút dán clipboard vào ô prompt (nối thêm sau nội dung đang có). File kịch bản → chỉ giữ các khối prompt. */
+export function PastePromptBtn({ value, setValue }: { value: string; setValue: (v: string) => void }) {
+  const [msg, setMsg] = useState('')
+  useEffect(() => {
+    if (!msg) return
+    const t = window.setTimeout(() => setMsg(''), 2500)
+    return () => window.clearTimeout(t)
+  }, [msg])
+  return (
+    <button
+      type="button"
+      className="paste-prompt"
+      title="Dán chữ trong clipboard vào ô prompt (nối thêm sau nội dung đang có)"
+      onClick={async () => {
+        try {
+          const t = cleanPromptFile(await docClipboard()).trim()
+          if (!t) {
+            setMsg('Clipboard trống')
+            return
+          }
+          setValue(value.trim() ? value.trimEnd() + '\n\n' + t : t)
+          setMsg('Đã dán')
+        } catch {
+          setMsg('Không đọc được clipboard')
+        }
+      }}
+    >
+      {msg || 'Dán'}
+    </button>
+  )
+}

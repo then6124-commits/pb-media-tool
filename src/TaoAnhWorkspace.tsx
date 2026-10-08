@@ -1,4 +1,4 @@
-import { ClearPromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
+import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './tao_anh.css'
 import DrawEngineModal, {
@@ -526,6 +526,7 @@ export default function TaoAnhWorkspace() {
               {promptLines.length} prompts
             </span>
             <span className="prompt-tools">
+              <PastePromptBtn value={prompt} setValue={setPrompt} />
               <ClearPromptBtn value={prompt} setValue={setPrompt} />
               <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
             </span>

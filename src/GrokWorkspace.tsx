@@ -1,4 +1,4 @@
-import { ClearPromptBtn, OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
+import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useState } from 'react'
 import { api, baseName, type BridgeJob, dirName, errText, fileUrl, openFolder, pickFiles as pickPaths, pickFolder, useJobs } from './bridge'
 
@@ -697,6 +697,7 @@ export default function GrokWorkspace() {
             )}
 
             <div className="one-prompt-row">
+              <PastePromptBtn value={prompt} setValue={setPrompt} />
               <ClearPromptBtn value={prompt} setValue={setPrompt} />
               <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
             </div>

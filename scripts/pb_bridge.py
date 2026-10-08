@@ -1479,6 +1479,19 @@ def chon_file(loai: str = "", goc: str = "") -> list[str]:
         return []
 
 
+def doc_clipboard() -> str:
+    """Chữ trong clipboard (dự phòng khi webview không cho đọc clipboard) — tiến trình riêng như chon_file."""
+    code = ("import tkinter as tk, json; r=tk.Tk(); r.withdraw();\n"
+            "try:\n    t=r.clipboard_get()\nexcept Exception:\n    t=''\n"
+            "print(json.dumps(t))")
+    try:
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           encoding="utf-8", timeout=20, creationflags=_KHONG_CUA_SO)
+        return json.loads((r.stdout or '""').strip() or '""')
+    except Exception:
+        return ""
+
+
 def _thu_ra(out_dir: str, con: str, goc: str = "") -> str:
     """Thư mục ra: đường dẫn người dùng chọn, không thì <goc>/<con> (goc mặc định = MiniApp)."""
     d = out_dir if (out_dir and os.path.isabs(out_dir)) else os.path.join(goc or OUT_MINI, con)
@@ -4030,6 +4043,8 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True})
             if u.path == "/api/refs/upload":
                 return self._json(200, {"ok": True, **luu_ref(d.get("name") or "", d.get("data") or "")})
+            if u.path == "/api/clipboard":
+                return self._json(200, {"ok": True, "text": doc_clipboard()})
             if u.path == "/api/pick-files":
                 return self._json(200, {"ok": True, "paths": chon_file(str(d.get("kind") or ""),
                                                                        str(d.get("start") or ""))})

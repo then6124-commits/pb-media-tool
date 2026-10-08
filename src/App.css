@@ -6134,3 +6134,9 @@ textarea.flow-frame-box { width: 100%; resize: vertical; color: inherit; font: i
 .va-card-title .prompt-tools { float: right; margin-top: -3px; }
 .ta-prompt-wrap .prompt-tools { position: absolute; top: 8px; right: 96px; z-index: 2; }
 .ta-prompt-wrap .prompt-tools .one-prompt { background: rgba(15,23,42,0.6); }
+.paste-prompt {
+  display: inline-flex; align-items: center; white-space: nowrap;
+  font-size: 12px; font-weight: 600; cursor: pointer; padding: 4px 10px; border-radius: 8px;
+  border: 1px solid rgba(56,189,248,0.45); background: rgba(56,189,248,0.08); color: #38bdf8;
+}
+.paste-prompt:hover { background: rgba(56,189,248,0.18); }

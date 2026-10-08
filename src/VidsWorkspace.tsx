@@ -1,4 +1,4 @@
-import { ClearPromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
+import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Ico } from './SettingsPanes'
 import './studio_sv.css'
@@ -975,6 +975,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                 >
                   <Ico n="file" size={13} /> Nạp TXT
                 </button>
+                <PastePromptBtn value={promptText} setValue={setPromptText} />
                 <ClearPromptBtn value={promptText} setValue={setPromptText} />
                 <OnePromptCheck on={onePrompt} setOn={setOnePrompt} />
                 <span className="vids-ghost muted st-count">{promptCount} prompt</span>
