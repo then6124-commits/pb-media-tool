@@ -173,9 +173,9 @@ function uid(prefix = 'id') {
 }
 function statusLabel(s: JobStatus) {
   switch (s) {
-    case 'cho': return { text: 'Chờ', cls: '' }
-    case 'dang_chay': return { text: 'Đang chạy', cls: 'run' }
-    case 'xong': return { text: 'Xong', cls: 'done' }
+    case 'cho': return { text: 'Chờ xử lý', cls: 'wait' }
+    case 'dang_chay': return { text: 'Đang tạo', cls: 'run' }
+    case 'xong': return { text: 'Completed', cls: 'done' }
     case 'loi': return { text: 'Lỗi', cls: 'err' }
   }
 }
@@ -251,7 +251,8 @@ export default function Veo3Workspace() {
   const [t2vFiles, setT2vFiles] = useState<T2VFile[]>([])
   const [t2vDrag, setT2vDrag] = useState(false)
   const [t2vLogAll, setT2vLogAll] = useState(false)
-  const [view, setView] = useState<ViewMode>((saved.view as ViewMode) || 'grid2')
+  const [view, setView] = useState<ViewMode>((saved.view as ViewMode) || 'list')
+  const [picked, setPicked] = useState<string[]>([])
   const [logOpen, setLogOpen] = useState(saved.logOpen !== false)
   const [logs, setLogs] = useState<string[]>(['Sẵn sàng — mọi mode chạy thật qua tool Python'])
   const [scriptBusy, setScriptBusy] = useState(false)
@@ -1158,14 +1159,14 @@ export default function Veo3Workspace() {
         <button type="button" className={`t2v-drop${t2vDrag ? ' drag' : ''}`} disabled={running}
           onClick={() => txtInputRef.current?.click()}
           onDragOver={t2vDragOver} onDragLeave={() => setT2vDrag(false)} onDrop={t2vDrop}>
-          <span className="t2v-drop-ico" aria-hidden>⬆</span>
+          <span className="t2v-drop-ico" aria-hidden>🗎</span>
           <span>{bridgeRunning ? 'Đang tạo...' : t2vDrag ? 'Thả file vào đây' : 'Kéo thả hoặc chọn file TXT / JSON'}</span>
         </button>
         <FilePicker accept=".txt,.json,.md,text/plain,application/json" multiple
           inputRef={txtInputRef} onFiles={(files) => void t2vAddFiles(files)} />
 
         <div className="t2v-settings">
-          <div className="t2v-grid">
+          <div className={`t2v-grid${isOmniFlash ? ' four' : ' three'}`}>
             <div className="t2v-sel">
               <select value={t2vRatio} aria-label="Tỉ lệ khung hình" onChange={(e) => setRatio(e.target.value)}>
                 {T2V_RATIOS.map((r) => <option key={r} value={r}>{r}</option>)}
@@ -1187,10 +1188,10 @@ export default function Veo3Workspace() {
                 <span className="t2v-chev" aria-hidden>▾</span>
               </div>
             )}
-            <div className={`t2v-folder${isOmniFlash ? '' : ' span2'}`}>
+            <div className="t2v-folder">
               <input type="text" placeholder="Thư mục lưu video..." value={outDir} title={outDir || undefined}
                 onChange={(e) => setOutDir(e.target.value)} />
-              <button type="button" title="Chọn thư mục lưu video" onClick={t2vPickFolder}>📁</button>
+              <button type="button" title="Chọn thư mục lưu video" onClick={t2vPickFolder}>🗁</button>
             </div>
           </div>
           {t2vRatio === '16:9' && (
@@ -1203,7 +1204,7 @@ export default function Veo3Workspace() {
 
         {bridgeRunning ? (
           <button type="button" className="t2v-start stop" onClick={handleStop}>
-            <span aria-hidden>■</span> Dừng
+            <span className="t2v-stop-ico" aria-hidden /> Dừng tạo video
           </button>
         ) : (
           <button type="button" className="t2v-start" disabled={!canStart || !!bridgeBusyOther} onClick={handleStart}
@@ -1212,9 +1213,11 @@ export default function Veo3Workspace() {
           </button>
         )}
         <div className="t2v-status">
-          {textJobs.length > 0
-            ? `${textDone}/${textJobs.length} item. Mỗi file sẽ tự lưu vào ${outDir || 'thư mục đã chọn'}`
-            : 'Đang chờ xử lý...'}
+          {bridgeRunning
+            ? `Đã gửi job lên server. Đang chờ xử lý... (${textDone}/${textJobs.length})`
+            : textJobs.length > 0
+              ? `${textDone}/${textJobs.length} video xong · lưu vào ${outDir || 'thư mục mặc định'}`
+              : 'Đang chờ xử lý...'}
         </div>
 
         {logs.length > 0 && (
@@ -2144,60 +2147,87 @@ export default function Veo3Workspace() {
     )
   }
 
-  function JobCard({ job }: { job: VeoJob }) {
+  /** «Download»: chép video đã xong sang thư mục người dùng chọn (cầu nối chép file thật). */
+  async function downloadFiles(paths: string[]) {
+    const ds = paths.filter(Boolean)
+    if (!ds.length) return showToast('Chưa có video nào xong')
+    try {
+      const dest = await pickFolder(outDir)
+      if (!dest) return
+      const r = await api<{ n: number }>('/api/util/copy-files', { paths: ds, dest })
+      pushLog(`⬇ Đã chép ${r.n} video → ${dest}`)
+      showToast(`Đã chép ${r.n} video`)
+    } catch (e) {
+      showToast(errText(e))
+    }
+  }
+
+  function JobCard({ job, no }: { job: VeoJob; no: number }) {
     const st = statusLabel(job.status)
+    const file = job.files?.[0]
+    const on = picked.includes(job.id)
     return (
-      <div className={`veo-job-card ${job.status}`}>
+      <div className={`veo-job-card sv ${job.status}${on ? ' picked' : ''}`}>
+        <button
+          type="button"
+          className="veo-job-no"
+          title={on ? 'Bỏ chọn' : 'Chọn'}
+          onClick={() => setPicked((p) => (on ? p.filter((x) => x !== job.id) : [...p, job.id]))}
+        >
+          {on ? '✓' : no}
+        </button>
         <div className="veo-job-thumb">
-          {job.files && job.files[0] ? (
-            <a className="veo-job-play" href={fileUrl(job.files[0])} target="_blank" rel="noreferrer"
-              title={job.files[0]}>▶</a>
+          {file ? (
+            <video src={`${fileUrl(file)}#t=0.5`} preload="metadata" controls muted />
           ) : (
-            <span className="veo-job-play">▶</span>
+            <span className="veo-job-wait">{job.status === 'loi' ? 'Lỗi' : 'Đang xử lý...'}</span>
           )}
-          <span className="veo-job-ratio">{job.ratio}</span>
         </div>
         <div className="veo-job-body">
-          <div className="veo-job-title" title={job.title}>{job.title}</div>
-          <div className="veo-job-prompt" title={job.prompt}>{job.prompt}</div>
-          {job.bridge && job.msg && job.status !== 'xong' && (
-            <div className="muted" style={{ fontSize: 11 }} title={job.msg}>{job.msg}</div>
-          )}
-          <div className="veo-job-bar"><div className="veo-job-fill" style={{ width: `${job.progress}%` }} /></div>
-          <div className="veo-job-foot">
-            <span className={`tag ${st.cls}`}>{st.text}</span>
-            <span className="muted">{job.progress}%</span>
-            <span className="grow" />
-            <button type="button" className="veo-job-act" title={job.bridge ? 'Mở thư mục video' : 'Tải xuống (mock)'}
-              disabled={job.status !== 'xong'}
-              onClick={() => {
-                if (job.bridge) {
-                  const f = job.files?.[0] || ''
-                  const dir = f ? f.replace(/[\\/][^\\/]*$/, '') : outDir
-                  api('/api/open-folder', { path: dir }).catch(() => {})
-                  return
-                }
-                pushLog(`Tải mock: ${job.title}`); showToast('Đã tải (mock)')
-              }}>⬇</button>
-            <button type="button" className="veo-job-act" title="Tạo lại"
-              disabled={job.bridge && (job.status === 'dang_chay' || bridgeRunning)}
-              onClick={() => {
-                if (job.bridge) {
-                  setHiddenJobs((prev) => [...prev, job.id])
-                  void startTextReal([job.prompt])
-                  return
-                }
-                setJobs((prev) => prev.map((j) =>
-                  j.id === job.id ? { ...j, status: 'cho' as const, progress: 0 } : j))
-                setRunning(true); pushLog(`Tạo lại: ${job.title}`)
-              }}>↻</button>
-            {job.bridge && job.status === 'xong' && job.files?.[0] && (
-              <button type="button" className="veo-job-act" title="Upscale x2 (realesrgan)"
-                onClick={() => void upscaleFile(job.files![0])}>⇧</button>
-            )}
-            <button type="button" className="veo-job-act danger" title="Xóa"
-              onClick={() => deleteJob(job.id)}>🗑</button>
+          <div className="veo-job-head">
+            <span className={`veo-job-st ${st.cls}`}>
+              {st.text}
+              {(job.status === 'cho' || job.status === 'dang_chay') && <i className="veo-dots" aria-hidden>•••</i>}
+            </span>
+            <span className="veo-job-acts">
+              {job.status === 'xong' && (
+                <button type="button" className="veo-job-act blue" title="Sửa prompt (đưa lên khung nhập)"
+                  onClick={() => { setPrompt(job.prompt); setMode('text'); showToast('Đã đưa prompt lên khung nhập') }}>
+                  ✎
+                </button>
+              )}
+              {job.status !== 'dang_chay' && (
+                <button type="button" className="veo-job-act violet" title="Tạo lại"
+                  disabled={job.bridge && bridgeRunning}
+                  onClick={() => {
+                    if (job.bridge) {
+                      setHiddenJobs((prev) => [...prev, job.id])
+                      void startTextReal([job.prompt])
+                    }
+                  }}>
+                  ✦
+                </button>
+              )}
+              {job.bridge && job.status === 'xong' && file && (
+                <button type="button" className="veo-job-act" title="Upscale x2 (realesrgan)"
+                  onClick={() => void upscaleFile(file)}>⇧</button>
+              )}
+              <button type="button" className="veo-job-act red" title="Xóa" onClick={() => deleteJob(job.id)}>
+                🗑
+              </button>
+            </span>
           </div>
+          <div className="veo-job-prompt" title={job.prompt}>{job.prompt}</div>
+          {job.status === 'loi' && job.msg && <div className="veo-job-err" title={job.msg}>{job.msg}</div>}
+          {job.status === 'dang_chay' && job.msg && !/^⏸?\s*Chờ/.test(job.msg) && (
+            <div className="veo-job-msg" title={job.msg}>{job.msg}</div>
+          )}
+          {job.status === 'xong' && file && (
+            <button type="button" className="veo-job-dl" onClick={() => void downloadFiles([file])}>
+              ⬇ Download
+            </button>
+          )}
+          <div className="veo-job-time">{new Date(job.createdAt).toLocaleString('en-US')}</div>
         </div>
       </div>
     )
@@ -2214,36 +2244,38 @@ export default function Veo3Workspace() {
         {mode === 'script' && <ScriptPanel />}
       </aside>
       <section className="veo-sv-right">
-        <div className="veo-canvas-bar">
-          <div className="veo-view-toggles">
-            <button type="button" className={`veo-view ${view === 'list' ? 'on' : ''}`}
-              onClick={() => setView('list')} title="List">☰</button>
-            <button type="button" className={`veo-view ${view === 'grid2' ? 'on' : ''}`}
-              onClick={() => setView('grid2')} title="Grid nhỏ">▦</button>
-            <button type="button" className={`veo-view ${view === 'grid3' ? 'on' : ''}`}
-              onClick={() => setView('grid3')} title="Grid vừa">⊞</button>
-            <button type="button" className={`veo-view ${view === 'grid4' ? 'on' : ''}`}
-              onClick={() => setView('grid4')} title="Grid lớn">▦</button>
+        <div className="veo-canvas-bar sv">
+          <label className="veo-pick-all">
+            <input type="checkbox" checked={jobs.length > 0 && picked.length === jobs.length}
+              onChange={(e) => setPicked(e.target.checked ? jobs.map((j) => j.id) : [])} />
+            <span>Chọn tất cả{picked.length ? ` (${picked.length})` : ''}</span>
+          </label>
+          <div className="veo-view-toggles sv">
+            {(['list', 'grid2', 'grid3', 'grid4'] as const).map((v, i) => (
+              <button key={v} type="button" className={`veo-view ${view === v ? 'on' : ''}`}
+                onClick={() => setView(v)} title={['Danh sách', 'Lưới 2 cột', 'Lưới 3 cột', 'Lưới 4 cột'][i]}>
+                {['☰', '▦', '⊞', '▩'][i]}
+              </button>
+            ))}
           </div>
-          <div className="veo-canvas-meta">
-            {jobs.length > 0 && (
-              <span className="muted">
-                {runCount} chạy · {doneCount}/{jobs.length} xong
-                {errCount ? ` · ${errCount} lỗi` : ''}
-              </span>
-            )}
-          </div>
+          <span className="grow" />
           <div className="veo-canvas-actions">
-            <button type="button" className="veo-link" disabled={doneCount === 0}
-              onClick={() => { pushLog(`Tải ${doneCount} video xong (mock)`); showToast(`Tải ${doneCount} file (mock)`) }}>
-              ⬇ Download ({doneCount})
-            </button>
+            {(() => {
+              const nguon = picked.length ? jobs.filter((j) => picked.includes(j.id)) : jobs
+              const xong = nguon.filter((j) => j.status === 'xong' && j.files?.[0]).map((j) => j.files![0])
+              return (
+                <button type="button" className="veo-link" disabled={xong.length === 0}
+                  onClick={() => void downloadFiles(xong)}>
+                  ⬇ Download ({xong.length})
+                </button>
+              )
+            })()}
             <button type="button" className="veo-link" disabled={errCount === 0}
               onClick={() => retryJobs('loi')}>↻ Tạo lại video lỗi ({errCount})</button>
             <button type="button" className="veo-link" disabled={jobs.length === 0}
               onClick={() => retryJobs('all')}>↻ Tạo lại ({jobs.length})</button>
-            <button type="button" className="veo-link" disabled={jobs.length === 0}
-              onClick={clearJobs}>Xóa tất cả</button>
+            <button type="button" className="veo-link strong" disabled={jobs.length === 0}
+              onClick={() => { clearJobs(); setPicked([]) }}>Xóa tất cả</button>
           </div>
         </div>
         <div className="veo-canvas">
@@ -2257,7 +2289,7 @@ export default function Veo3Workspace() {
             </div>
           ) : (
             <div className={`veo-job-grid ${view}`}>
-              {jobs.map((j) => <JobCard key={j.id} job={j} />)}
+              {jobs.map((j, i) => <JobCard key={j.id} job={j} no={i + 1} />)}
             </div>
           )}
         </div>

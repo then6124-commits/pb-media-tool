@@ -3274,6 +3274,30 @@ def ban_quyen(d: dict) -> dict:
             "days": st.get("days"), "name": st.get("name") or "", "machine_id": license_manager.machine_id()}
 
 
+def chep_file(paths, dest: str) -> dict:
+    """«Download» của Veo3: chép video đã tạo sang thư mục người dùng chọn (trùng tên → thêm (2), (3)…)."""
+    if not (dest and os.path.isabs(dest)):
+        raise RuntimeError("Chưa chọn thư mục đích")
+    os.makedirs(dest, exist_ok=True)
+    goc = os.path.abspath(OUT_MAC_DINH) + os.sep
+    n = 0
+    for p in paths or []:
+        p = str(p or "")
+        # chỉ chép file do app tạo (trong thư mục lưu) — không thành cửa sổ chép file tuỳ ý
+        if not (os.path.isfile(p) and (os.path.abspath(p).startswith(goc) or p in {
+                v.get("out_path") for v in VIEC.viec.values()})):
+            continue
+        ten, duoi = os.path.splitext(os.path.basename(p))
+        dich, k = os.path.join(dest, ten + duoi), 2
+        while os.path.exists(dich):
+            dich = os.path.join(dest, "%s (%d)%s" % (ten, k, duoi))
+            k += 1
+        shutil.copy2(p, dich)
+        n += 1
+    log("⬇ Đã chép %d file → %s" % (n, dest), "INFO", "flow")
+    return {"n": n, "dest": dest}
+
+
 def cap_nhat_ytdlp() -> dict:
     def viec(v):
         v["msg"] = "yt-dlp -U…"
@@ -3645,6 +3669,8 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "lines": don_tien_trinh()})
             if u.path == "/api/license":
                 return self._json(200, {"ok": True, **ban_quyen(d)})
+            if u.path == "/api/util/copy-files":
+                return self._json(200, {"ok": True, **chep_file(d.get("paths"), str(d.get("dest") or ""))})
             if u.path == "/api/util/update-ytdlp":
                 return self._json(200, {"ok": True, **cap_nhat_ytdlp()})
             if u.path == "/api/ext/status":
