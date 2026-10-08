@@ -199,6 +199,707 @@ function saveStr(key: string, val: string) {
   }
 }
 
+// Thẻ đã nối cầu nối thật (scripts/pb_bridge.py · /api/mini/*). Thẻ khác vẫn là mock.
+const LIVE = new Set<AppId>([
+  'cut-img',
+  'cut-vid',
+  'upscale',
+  'yt-dl',
+  'rewrite',
+  'translate',
+  'script-prompt',
+  'whiteboard',
+])
+
+const TRANSLATE_LANGS = [
+  'Tiếng Việt',
+  'English',
+  '中文 (Chinese)',
+  '日本語 (Japanese)',
+  '한국어 (Korean)',
+  'Español',
+  'Português',
+  'Français',
+  'Deutsch',
+  'Русский',
+  'Bahasa Indonesia',
+  'ไทย (Thai)',
+  'हिन्दी (Hindi)',
+  'العربية (Arabic)',
+  'Italiano',
+  'Türkçe',
+  'Filipino',
+  'Polski',
+  'Nederlands',
+  'Bahasa Melayu',
+]
+
+async function api<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
+  const r = await fetch(
+    path,
+    body === undefined
+      ? undefined
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+  )
+  const j = (await r.json().catch(() => ({}))) as T & { ok?: boolean; error?: string }
+  if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`)
+  return j
+}
+
+function errText(e: unknown) {
+  const m = e instanceof Error ? e.message : String(e)
+  return /Failed to fetch|NetworkError/i.test(m) ? 'Cầu nối (pb_bridge.py) chưa chạy' : m
+}
+
+function baseName(p: string) {
+  return p.split(/[\\/]/).pop() || p
+}
+
+function downloadText(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+type MiniJob = {
+  id: string
+  loai: string
+  nguon: string
+  status: 'dang_chay' | 'xong' | 'loi'
+  msg: string
+  out_path: string
+  out_dir?: string
+}
+
+/** Việc nền của MiniApp — hỏi /api/util/jobs 1.5s một lần, lọc theo `loai`. */
+function useJobs(loai: string[]) {
+  const [jobs, setJobs] = useState<MiniJob[]>([])
+  const key = loai.join(',')
+  useEffect(() => {
+    let dead = false
+    const want = key.split(',')
+    async function tick() {
+      try {
+        const r = await api<{ jobs: MiniJob[] }>('/api/util/jobs')
+        if (!dead) setJobs(r.jobs.filter((j) => want.includes(j.loai)))
+      } catch {
+        /* cầu nối tắt */
+      }
+    }
+    void tick()
+    const t = window.setInterval(tick, 1500)
+    return () => {
+      dead = true
+      window.clearInterval(t)
+    }
+  }, [key])
+  return jobs
+}
+
+function JobList({ jobs }: { jobs: MiniJob[] }) {
+  if (!jobs.length) return null
+  return (
+    <div className="ma-jobs">
+      <div className="rw-label">VIỆC ĐANG / ĐÃ CHẠY</div>
+      {jobs.map((j) => {
+        const dir = j.out_dir || (j.out_path ? j.out_path.replace(/[\\/][^\\/]*$/, '') : '')
+        return (
+          <div key={j.id} className={`ma-job ${j.status}`}>
+            <span className="ma-job-dot" />
+            <div className="ma-job-main">
+              <div className="ma-job-name">{baseName(j.nguon)}</div>
+              <div className="ma-muted sm">
+                {j.status === 'dang_chay' ? '⏳ ' : j.status === 'xong' ? '✅ ' : '❌ '}
+                {j.msg || (j.status === 'dang_chay' ? 'Đang chạy…' : '')}
+              </div>
+            </div>
+            {dir && j.status !== 'dang_chay' && (
+              <button
+                type="button"
+                className="ma-btn ghost"
+                onClick={() => void api('/api/open-folder', { path: dir }).catch(() => {})}
+              >
+                📂 Mở thư mục
+              </button>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ToolHeader({ title, badge, onBack }: { title: string; badge?: string; onBack: () => void }) {
+  return (
+    <header className="ma-tool-top">
+      <button type="button" className="ma-back" onClick={onBack} title="Quay lại">
+        ←
+      </button>
+      <div className="ma-tool-head">
+        <h1>{title}</h1>
+        {badge && <span className="ma-badge green">{badge}</span>}
+      </div>
+    </header>
+  )
+}
+
+/** Chọn file (hộp thoại Windows qua cầu nối) + thư mục ra — dùng chung cho các tool file. */
+function FilePicker({
+  kind,
+  label,
+  paths,
+  setPaths,
+  outDir,
+  setOutDir,
+}: {
+  kind: 'video' | 'anh'
+  label: string
+  paths: string[]
+  setPaths: (p: string[]) => void
+  outDir: string
+  setOutDir: (p: string) => void
+}) {
+  const [err, setErr] = useState('')
+  async function pick() {
+    setErr('')
+    try {
+      const r = await api<{ paths: string[] }>('/api/pick-files', { kind })
+      if (r.paths.length) setPaths(r.paths)
+    } catch (e) {
+      setErr(errText(e))
+    }
+  }
+  async function pickDir(forOut: boolean) {
+    setErr('')
+    try {
+      const r = await api<{ path: string }>('/api/pick-folder', { start: forOut ? outDir : '' })
+      if (!r.path) return
+      if (forOut) setOutDir(r.path)
+      else setPaths([r.path])
+    } catch (e) {
+      setErr(errText(e))
+    }
+  }
+  return (
+    <section className="va-card">
+      <div className="va-card-title">{label}</div>
+      <div className="ma-row">
+        <button type="button" className="ma-btn primary" onClick={pick}>
+          📁 Chọn file
+        </button>
+        <button type="button" className="ma-btn ghost" onClick={() => void pickDir(false)}>
+          🗂 Chọn cả thư mục
+        </button>
+        <span className="ma-muted">
+          {paths.length === 0
+            ? 'Chưa chọn'
+            : paths.length === 1
+              ? paths[0]
+              : `${paths.length} file · ${baseName(paths[0])}…`}
+        </span>
+      </div>
+      <div className="ma-row">
+        <button type="button" className="ma-btn ghost" onClick={() => void pickDir(true)}>
+          💾 Thư mục lưu
+        </button>
+        <span className="ma-muted">{outDir || 'Mặc định: Videos\\PB_MEDIA\\MiniApp'}</span>
+        {outDir && (
+          <button type="button" className="ma-link" onClick={() => setOutDir('')}>
+            Bỏ
+          </button>
+        )}
+      </div>
+      {err && <div className="ma-err">{err}</div>}
+    </section>
+  )
+}
+
+function FileJobTool({ app, card, onBack }: { app: AppId; card: MiniCard; onBack: () => void }) {
+  const isVideo = app === 'cut-img' || app === 'cut-vid'
+  const [paths, setPaths] = useState<string[]>([])
+  const [outDir, setOutDir] = useState(() => loadStr(`pb.mini.${app}.out`, ''))
+  const [every, setEvery] = useState(() => Number(loadStr('pb.mini.cut-img.every', '2')))
+  const [mode, setMode] = useState<'parts' | 'secs'>(() =>
+    loadStr('pb.mini.cut-vid.mode', 'parts') === 'secs' ? 'secs' : 'parts',
+  )
+  const [value, setValue] = useState(() => Number(loadStr('pb.mini.cut-vid.value', '3')))
+  const [scale, setScale] = useState(() => Number(loadStr('pb.mini.upscale.scale', '2')))
+  const [url, setUrl] = useState('')
+  const [limit, setLimit] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const jobs = useJobs([`mini-${app}`])
+
+  useEffect(() => {
+    saveStr(`pb.mini.${app}.out`, outDir)
+    saveStr('pb.mini.cut-img.every', String(every))
+    saveStr('pb.mini.cut-vid.mode', mode)
+    saveStr('pb.mini.cut-vid.value', String(value))
+    saveStr('pb.mini.upscale.scale', String(scale))
+  }, [app, outDir, every, mode, value, scale])
+
+  const ready = app === 'yt-dl' ? /^https?:\/\//.test(url.trim()) : paths.length > 0
+
+  async function run() {
+    setBusy(true)
+    setErr('')
+    try {
+      const out_dir = outDir
+      if (app === 'cut-img') await api('/api/mini/cut-img', { paths, every, out_dir })
+      else if (app === 'cut-vid') await api('/api/mini/cut-vid', { paths, mode, value, out_dir })
+      else if (app === 'upscale') await api('/api/mini/upscale', { paths, scale, out_dir })
+      else if (app === 'yt-dl') await api('/api/mini/yt-dl', { url: url.trim(), limit, out_dir })
+    } catch (e) {
+      setErr(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="ma-tool">
+      <ToolHeader title={card.title} badge="LIVE" onBack={onBack} />
+      <div className="va-step1">
+        {app === 'yt-dl' ? (
+          <section className="va-card">
+            <div className="va-card-title">Link kênh / playlist / video</div>
+            <input
+              className="ma-input"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://www.youtube.com/@kenh/videos · playlist · TikTok @user …"
+            />
+            <div className="ma-row">
+              <label className="ma-muted">Tối đa</label>
+              <input
+                className="ma-num"
+                type="number"
+                min={0}
+                value={limit}
+                onChange={(e) => setLimit(Math.max(0, Number(e.target.value) || 0))}
+              />
+              <span className="ma-muted">video (0 = tải hết). Video đã tải sẽ được bỏ qua lần sau.</span>
+            </div>
+            <div className="ma-row">
+              <button
+                type="button"
+                className="ma-btn ghost"
+                onClick={() =>
+                  void api<{ path: string }>('/api/pick-folder', { start: outDir })
+                    .then((r) => r.path && setOutDir(r.path))
+                    .catch((e) => setErr(errText(e)))
+                }
+              >
+                💾 Thư mục lưu
+              </button>
+              <span className="ma-muted">{outDir || 'Mặc định: Videos\\PB_MEDIA\\MiniApp\\Tai_kenh'}</span>
+            </div>
+          </section>
+        ) : (
+          <FilePicker
+            kind={isVideo ? 'video' : 'anh'}
+            label={isVideo ? '1 · Chọn video' : '1 · Chọn ảnh'}
+            paths={paths}
+            setPaths={setPaths}
+            outDir={outDir}
+            setOutDir={setOutDir}
+          />
+        )}
+
+        {app === 'cut-img' && (
+          <section className="va-card">
+            <div className="va-card-title">2 · Khoảng cách giữa các ảnh</div>
+            <div className="ma-row">
+              <span className="ma-muted">Mỗi</span>
+              <input
+                className="ma-num"
+                type="number"
+                min={0.1}
+                step={0.5}
+                value={every}
+                onChange={(e) => setEvery(Math.max(0.1, Number(e.target.value) || 1))}
+              />
+              <span className="ma-muted">giây lấy 1 ảnh PNG</span>
+            </div>
+          </section>
+        )}
+
+        {app === 'cut-vid' && (
+          <section className="va-card">
+            <div className="va-card-title">2 · Cách chia</div>
+            <div className="va-seg">
+              <button
+                type="button"
+                className={`va-pill ${mode === 'parts' ? 'on' : ''}`}
+                onClick={() => setMode('parts')}
+              >
+                Chia đều N phần
+              </button>
+              <button
+                type="button"
+                className={`va-pill ${mode === 'secs' ? 'on' : ''}`}
+                onClick={() => setMode('secs')}
+              >
+                Mỗi phần N giây
+              </button>
+            </div>
+            <div className="ma-row">
+              <input
+                className="ma-num"
+                type="number"
+                min={1}
+                value={value}
+                onChange={(e) => setValue(Math.max(1, Number(e.target.value) || 1))}
+              />
+              <span className="ma-muted">{mode === 'parts' ? 'phần bằng nhau' : 'giây mỗi phần'}</span>
+            </div>
+          </section>
+        )}
+
+        {app === 'upscale' && (
+          <section className="va-card">
+            <div className="va-card-title">2 · Mức phóng to (Real-ESRGAN)</div>
+            <div className="va-seg">
+              {[2, 4].map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className={`va-pill ${scale === s ? 'on' : ''}`}
+                  onClick={() => setScale(s)}
+                >
+                  x{s}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <footer className="va-foot">
+          <div className="ma-err">{err}</div>
+          <button type="button" className="ma-btn gold" disabled={!ready || busy} onClick={run}>
+            {busy ? 'Đang gửi…' : '▶ Bắt đầu'}
+          </button>
+        </footer>
+        <JobList jobs={jobs} />
+      </div>
+    </div>
+  )
+}
+
+/** Nút «Tải file» chữ: hộp thoại chọn file qua cầu nối rồi đọc nội dung. */
+function useLoadText(onText: (t: string) => void) {
+  const [err, setErr] = useState('')
+  async function load() {
+    setErr('')
+    try {
+      const r = await api<{ paths: string[] }>('/api/pick-files', { kind: 'chu' })
+      if (!r.paths.length) return
+      const t = await api<{ text: string }>('/api/mini/read-text', { path: r.paths[0] })
+      onText(t.text)
+    } catch (e) {
+      setErr(errText(e))
+    }
+  }
+  return { load, err }
+}
+
+function TranslateTool({ onBack }: { onBack: () => void }) {
+  const [text, setText] = useState(() => loadStr('pb.mini.translate.text', ''))
+  const [lang, setLang] = useState(() => loadStr('pb.mini.translate.lang', 'English'))
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [result, setResult] = useState('')
+  const file = useLoadText(setText)
+  const isSub = /\d\d:\d\d:\d\d[,.]\d{3}\s*-->/.test(text)
+
+  useEffect(() => {
+    saveStr('pb.mini.translate.text', text)
+    saveStr('pb.mini.translate.lang', lang)
+  }, [text, lang])
+
+  async function run() {
+    setBusy(true)
+    setErr('')
+    try {
+      const r = await api<{ text: string }>('/api/mini/translate', { text, lang })
+      setResult(r.text)
+    } catch (e) {
+      setErr(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="ma-tool rewrite">
+      <ToolHeader title="Dịch Nội Dung Đa Ngôn Ngữ" badge="GEMINI" onBack={onBack} />
+      <div className="rw-body">
+        <section className="rw-left">
+          <div className="rw-sec-head">
+            <span>📄 NỘI DUNG GỐC {isSub && '· PHỤ ĐỀ (giữ nguyên mốc thời gian)'}</span>
+            <div className="rw-meta">
+              <span>{text.length} ký tự</span>
+              <button type="button" className="ma-link" onClick={() => void file.load()}>
+                Tải tệp .txt/.srt/.vtt/.ass
+              </button>
+            </div>
+          </div>
+          <textarea
+            className="rw-textarea"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Dán văn bản hoặc phụ đề SRT/VTT cần dịch…"
+          />
+          {(file.err || err) && <div className="ma-err">{file.err || err}</div>}
+          {result && (
+            <div className="rw-result">
+              <div className="rw-sec-head">
+                <span>✨ BẢN DỊCH · {lang}</span>
+                <div className="rw-meta">
+                  <button type="button" className="ma-link" onClick={() => navigator.clipboard?.writeText(result)}>
+                    Copy
+                  </button>
+                  <button
+                    type="button"
+                    className="ma-link"
+                    onClick={() => downloadText(isSub ? 'ban_dich.srt' : 'ban_dich.txt', result)}
+                  >
+                    Lưu file
+                  </button>
+                </div>
+              </div>
+              <pre>{result}</pre>
+            </div>
+          )}
+        </section>
+        <aside className="rw-right">
+          <div className="rw-cfg-title">CẤU HÌNH DỊCH</div>
+          <div className="rw-block">
+            <div className="rw-label">NGÔN NGỮ ĐÍCH</div>
+            <select value={lang} onChange={(e) => setLang(e.target.value)}>
+              {TRANSLATE_LANGS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+            <div className="ma-muted sm">Văn bản dài được chia khúc tự động, giữ nguyên định dạng.</div>
+          </div>
+          <button type="button" className="ma-btn primary block" disabled={!text.trim() || busy} onClick={run}>
+            {busy ? 'Đang dịch…' : '🌐 Dịch'}
+          </button>
+        </aside>
+      </div>
+    </div>
+  )
+}
+
+type PromptScene = { time?: string; text?: string; img?: string; vid?: string }
+
+function ScriptPromptTool({ onBack }: { onBack: () => void }) {
+  const [text, setText] = useState(() => loadStr('pb.mini.sp.text', ''))
+  const [clip, setClip] = useState(() => loadStr('pb.mini.sp.clip', '8s (Veo 3)'))
+  const [style, setStyle] = useState(() => loadStr('pb.mini.sp.style', 'cine'))
+  const [customStyle, setCustomStyle] = useState(() => loadStr('pb.mini.sp.custom', ''))
+  const [aspect, setAspect] = useState(() => loadStr('pb.mini.sp.aspect', '16:9'))
+  const [outLang, setOutLang] = useState<'en' | 'vi'>(() => (loadStr('pb.mini.sp.lang', 'en') === 'vi' ? 'vi' : 'en'))
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [bible, setBible] = useState('')
+  const [scenes, setScenes] = useState<PromptScene[]>([])
+  const file = useLoadText(setText)
+
+  useEffect(() => {
+    saveStr('pb.mini.sp.text', text)
+    saveStr('pb.mini.sp.clip', clip)
+    saveStr('pb.mini.sp.style', style)
+    saveStr('pb.mini.sp.custom', customStyle)
+    saveStr('pb.mini.sp.aspect', aspect)
+    saveStr('pb.mini.sp.lang', outLang)
+  }, [text, clip, style, customStyle, aspect, outLang])
+
+  const styleMeta = VA_STYLES.find((s) => s.id === style)
+  const styleText = style === 'custom' ? customStyle.trim() : `${styleMeta?.name} (${styleMeta?.desc})`
+
+  async function run() {
+    setBusy(true)
+    setErr('')
+    try {
+      const r = await api<{ bible: string; scenes: PromptScene[] }>('/api/mini/script-prompt', {
+        text,
+        clipSec: parseInt(clip, 10) || 8,
+        style: styleText,
+        aspect,
+        outLang,
+      })
+      setBible(r.bible)
+      setScenes(r.scenes)
+    } catch (e) {
+      setErr(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const allImg = scenes.map((s) => s.img || '').filter(Boolean).join('\n')
+  const allVid = scenes.map((s) => s.vid || '').filter(Boolean).join('\n')
+
+  return (
+    <div className="ma-tool va">
+      <ToolHeader title="Kịch Bản → Prompt Ảnh/Video" badge="GEMINI" onBack={onBack} />
+      <div className="va-step1">
+        <section className="va-card">
+          <div className="rw-sec-head">
+            <span>📄 KỊCH BẢN / PHỤ ĐỀ</span>
+            <div className="rw-meta">
+              <span>{text.length} ký tự</span>
+              <button type="button" className="ma-link" onClick={() => void file.load()}>
+                Tải tệp .txt/.srt/.vtt
+              </button>
+            </div>
+          </div>
+          <textarea
+            className="rw-textarea sp"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Dán script hoặc SRT/VTT…"
+          />
+          {file.err && <div className="ma-err">{file.err}</div>}
+        </section>
+
+        <section className="va-card">
+          <div className="va-card-title">Phong cách & khung hình</div>
+          <div className="va-cfg">
+            <div className="va-cfg-left">
+              <div className="rw-label">Thời lượng mỗi cảnh</div>
+              <div className="va-seg">
+                {CLIP_DUR.map((d) => (
+                  <button key={d} type="button" className={`va-pill ${clip === d ? 'on' : ''}`} onClick={() => setClip(d)}>
+                    {d}
+                  </button>
+                ))}
+              </div>
+              <div className="rw-label">Tỷ lệ khung hình</div>
+              <div className="va-seg">
+                {ASPECTS.map((a) => (
+                  <button key={a} type="button" className={`va-pill ${aspect === a ? 'on' : ''}`} onClick={() => setAspect(a)}>
+                    {a}
+                  </button>
+                ))}
+              </div>
+              <div className="rw-label">Ngôn ngữ prompt</div>
+              <div className="va-seg">
+                <button type="button" className={`va-pill ${outLang === 'en' ? 'on' : ''}`} onClick={() => setOutLang('en')}>
+                  English (Veo3)
+                </button>
+                <button type="button" className={`va-pill ${outLang === 'vi' ? 'on' : ''}`} onClick={() => setOutLang('vi')}>
+                  Tiếng Việt
+                </button>
+              </div>
+            </div>
+            <div className="va-cfg-right">
+              <div className="rw-label">Phong cách nghệ thuật</div>
+              <div className="va-styles">
+                {VA_STYLES.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className={`va-style ${style === s.id ? 'on' : ''}`}
+                    onClick={() => setStyle(s.id)}
+                  >
+                    {style === s.id && <span className="va-check">✓</span>}
+                    <div className="va-style-name">{s.name}</div>
+                    <div className="ma-muted sm">{s.desc}</div>
+                  </button>
+                ))}
+              </div>
+              {style === 'custom' && (
+                <input
+                  className="ma-input"
+                  value={customStyle}
+                  onChange={(e) => setCustomStyle(e.target.value)}
+                  placeholder="Mô tả phong cách riêng…"
+                />
+              )}
+            </div>
+          </div>
+        </section>
+
+        <footer className="va-foot">
+          <div className="ma-err">{err}</div>
+          <button
+            type="button"
+            className="ma-btn gold"
+            disabled={!text.trim() || busy || (style === 'custom' && !customStyle.trim())}
+            onClick={run}
+          >
+            {busy ? 'Gemini đang đạo diễn…' : '✨ Tạo Prompt'}
+          </button>
+        </footer>
+
+        {scenes.length > 0 && (
+          <>
+            <div className="va-list-head">
+              <div>{scenes.length} phân cảnh</div>
+              <div className="va-list-acts">
+                <button type="button" className="ma-btn ghost" onClick={() => navigator.clipboard?.writeText(allImg)}>
+                  Copy prompt ảnh
+                </button>
+                <button type="button" className="ma-btn ghost" onClick={() => navigator.clipboard?.writeText(allVid)}>
+                  Copy prompt video
+                </button>
+                <button
+                  type="button"
+                  className="ma-btn ghost"
+                  onClick={() => downloadText('prompts.json', JSON.stringify({ bible, scenes }, null, 2))}
+                >
+                  Xuất JSON
+                </button>
+              </div>
+            </div>
+            {bible && (
+              <div className="va-bible">
+                <div className="va-bible-head">📖 Story Bible</div>
+                <pre className="ma-pre">{bible}</pre>
+              </div>
+            )}
+            <div className="va-scenes">
+              {scenes.map((s, i) => (
+                <article key={i} className="va-scene">
+                  <div className="va-scene-top">
+                    <b>Cảnh {i + 1}</b>
+                    <span className="ma-muted">{s.time}</span>
+                  </div>
+                  {s.text && (
+                    <div className="va-scene-line">
+                      <span className="tag">VO</span> {s.text}
+                    </div>
+                  )}
+                  {s.img && (
+                    <div className="va-scene-block">
+                      <div className="rw-label">Prompt Ảnh</div>
+                      <pre>{s.img}</pre>
+                    </div>
+                  )}
+                  {s.vid && (
+                    <div className="va-scene-block">
+                      <div className="rw-label">Prompt Video</div>
+                      <pre>{s.vid}</pre>
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function Hub({ onOpen }: { onOpen: (id: AppId) => void }) {
   return (
     <div className="ma-hub">
@@ -211,6 +912,7 @@ function Hub({ onOpen }: { onOpen: (id: AppId) => void }) {
             onClick={() => onOpen(c.id)}
           >
             <div className={`ma-card-ico accent-${c.accent}`}>{c.icon}</div>
+            {!LIVE.has(c.id) && <span className="ma-card-soon">Sắp có</span>}
             <div className="ma-card-title">{c.title}</div>
             <div className="ma-card-desc">{c.desc}</div>
             <div className={`ma-card-bar accent-${c.accent}`} />
@@ -236,14 +938,14 @@ function StubTool({
         </button>
         <div className="ma-tool-head">
           <h1>{card.title}</h1>
-          <span className="ma-badge muted">MOCK</span>
+          <span className="ma-badge muted">SẮP CÓ</span>
         </div>
       </header>
       <div className="ma-stub">
         <div className="ma-stub-ico">{card.icon}</div>
         <div className="ma-stub-title">{card.title}</div>
         <p>{card.desc}</p>
-        <p className="ma-muted">Mock UI — chưa kết nối API / file thật. Bạn có thể mở các tool Viết Lại Kịch Bản, Video/Audio → Prompt, Whiteboard Draw Studio để xem flow đầy đủ.</p>
+        <p className="ma-muted">Công cụ này chưa làm xong. Các thẻ không có nhãn «Sắp có» ở trang MiniApp đã chạy thật.</p>
         <button type="button" className="ma-btn primary" onClick={onBack}>
           Quay lại MiniApp
         </button>
@@ -260,6 +962,7 @@ function RewriteTool({ onBack }: { onBack: () => void }) {
   const [dur, setDur] = useState(() => Number(loadStr('pb.mini.rewrite.dur', '0')))
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState('')
+  const [err, setErr] = useState('')
 
   const chars = script.length
   const words = script.trim() ? script.trim().split(/\s+/).length : 0
@@ -285,35 +988,24 @@ function RewriteTool({ onBack }: { onBack: () => void }) {
     }
   }
 
-  function runMock() {
+  async function run() {
     if (!script.trim()) return
     setBusy(true)
-    setResult('')
-    window.setTimeout(() => {
-      const lines = script
-        .trim()
-        .split(/\n+/)
-        .map((l) => l.trim())
-        .filter(Boolean)
-      const rewritten = [
-        `[Mock viết lại · ${toneMeta.label} · ${lang === 'auto' ? 'Auto' : lang}${dur > 0 ? ` · ~${dur} phút` : ''}]`,
-        '',
-        ...lines.map((l, i) => {
-          if (i === 0) return `🔥 ${l.replace(/\?$/, '')}? Hãy cùng mình đi sâu hơn.`
-          return l
-        }),
-        '',
-        extra.trim()
-          ? `Phong cách bổ sung: ${extra.trim().replace(/\n/g, ' · ')}`
-          : '',
-        '',
-        '— Kết thúc mock rewrite (không gọi Gemini thật) —',
-      ]
-        .filter((x) => x !== undefined)
-        .join('\n')
-      setResult(rewritten)
+    setErr('')
+    try {
+      const r = await api<{ text: string }>('/api/mini/rewrite', {
+        script,
+        tone: `${toneMeta.label} — ${toneMeta.desc}`,
+        extra,
+        lang,
+        dur,
+      })
+      setResult(r.text)
+    } catch (e) {
+      setErr(errText(e))
+    } finally {
       setBusy(false)
-    }, 900)
+    }
   }
 
   return (
@@ -376,17 +1068,23 @@ function RewriteTool({ onBack }: { onBack: () => void }) {
             }}
           />
           <div className="rw-tip">💡 Mẹo: Hỗ trợ dán văn bản dài không giới hạn hoặc tải trực tiếp file .txt</div>
+          {err && <div className="ma-err">{err}</div>}
           {result && (
             <div className="rw-result">
               <div className="rw-sec-head">
-                <span>✨ KỊCH BẢN VIẾT LẠI (MOCK)</span>
-                <button
-                  type="button"
-                  className="ma-link"
-                  onClick={() => navigator.clipboard?.writeText(result)}
-                >
-                  Copy
-                </button>
+                <span>✨ KỊCH BẢN VIẾT LẠI</span>
+                <div className="rw-meta">
+                  <button
+                    type="button"
+                    className="ma-link"
+                    onClick={() => navigator.clipboard?.writeText(result)}
+                  >
+                    Copy
+                  </button>
+                  <button type="button" className="ma-link" onClick={() => downloadText('kich_ban_moi.txt', result)}>
+                    Lưu .txt
+                  </button>
+                </div>
               </div>
               <pre>{result}</pre>
             </div>
@@ -503,9 +1201,9 @@ function RewriteTool({ onBack }: { onBack: () => void }) {
             type="button"
             className="ma-btn primary block"
             disabled={!script.trim() || busy}
-            onClick={runMock}
+            onClick={run}
           >
-            {busy ? 'Đang viết lại (mock)...' : '✨ Viết lại kịch bản'}
+            {busy ? 'Đang viết lại...' : '✨ Viết lại kịch bản'}
           </button>
         </aside>
       </div>
@@ -582,6 +1280,7 @@ function VaPromptTool({ onBack }: { onBack: () => void }) {
             <span className="ma-title-ico">🎞️</span>
             <h1>Video/Audio → Prompt Ảnh & Video</h1>
             <span className="ma-badge gold">AI Director Studio</span>
+            <span className="ma-badge muted">MOCK · dùng «Kịch Bản → Prompt» để tạo thật</span>
           </div>
           <div className="ma-sub">
             Nạp Video hoặc Audio → Tự động bóc tách lời thoại & Đạo diễn sinh Prompt ảnh + video nhất quán
@@ -848,6 +1547,32 @@ function WhiteboardTool({ onBack }: { onBack: () => void }) {
   const [modal, setModal] = useState(true)
   const [cfg, setCfg] = useState(DEFAULT_DRAW_CONFIG)
   const [applied, setApplied] = useState(DEFAULT_DRAW_CONFIG.handName)
+  const [paths, setPaths] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const jobs = useJobs(['draw'])
+
+  async function pick() {
+    setErr('')
+    try {
+      const r = await api<{ paths: string[] }>('/api/pick-files', { kind: 'anh' })
+      if (r.paths.length) setPaths(r.paths)
+    } catch (e) {
+      setErr(errText(e))
+    }
+  }
+
+  async function exportVideo() {
+    setBusy(true)
+    setErr('')
+    try {
+      await api('/api/mini/draw', { paths, cfg })
+    } catch (e) {
+      setErr(errText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="ma-tool wb">
@@ -858,6 +1583,7 @@ function WhiteboardTool({ onBack }: { onBack: () => void }) {
         <div className="ma-tool-head">
           <h1>Whiteboard Draw Studio</h1>
           <span className="ma-badge gold">DRAW ENGINE 2.0</span>
+          <span className="ma-badge green">LIVE</span>
         </div>
         <button type="button" className="ma-btn gold" onClick={() => setModal(true)}>
           Mở thư viện tay & bút
@@ -869,7 +1595,7 @@ function WhiteboardTool({ onBack }: { onBack: () => void }) {
           <div className="wb-canvas" style={{ background: cfg.bgColor, color: '#222' }}>
             <div className="wb-hand-mock">✍️</div>
             <div className="wb-line" style={{ borderColor: '#222', height: cfg.strokePx }} />
-            <div className="wb-caption">Mock canvas · {applied}</div>
+            <div className="wb-caption">Xem trước · {applied}</div>
           </div>
         </div>
         <aside className="wb-side">
@@ -897,10 +1623,23 @@ function WhiteboardTool({ onBack }: { onBack: () => void }) {
           <button type="button" className="ma-btn primary block" onClick={() => setModal(true)}>
             Chỉnh trong DRAW ENGINE 2.0
           </button>
-          <button type="button" className="ma-btn ghost block" disabled>
-            Xuất video (mock)
+          <button type="button" className="ma-btn ghost block" onClick={pick}>
+            🖼 Chọn ảnh ({paths.length})
           </button>
+          <div className="ma-muted sm">Video ra cạnh ảnh gốc: tên_ảnh_draw.mp4</div>
+          <button
+            type="button"
+            className="ma-btn gold block"
+            disabled={!paths.length || busy}
+            onClick={exportVideo}
+          >
+            {busy ? 'Đang gửi…' : `🎬 Xuất ${paths.length || ''} video`}
+          </button>
+          {err && <div className="ma-err">{err}</div>}
         </aside>
+      </div>
+      <div className="wb-jobs">
+        <JobList jobs={jobs} />
       </div>
 
       <DrawEngineModal
@@ -941,6 +1680,30 @@ export default function MiniAppWorkspace() {
     return (
       <div className="ma-root">
         <VaPromptTool onBack={() => setApp('hub')} />
+      </div>
+    )
+  }
+
+  if (app === 'translate') {
+    return (
+      <div className="ma-root">
+        <TranslateTool onBack={() => setApp('hub')} />
+      </div>
+    )
+  }
+
+  if (app === 'script-prompt') {
+    return (
+      <div className="ma-root">
+        <ScriptPromptTool onBack={() => setApp('hub')} />
+      </div>
+    )
+  }
+
+  if (card && (app === 'cut-img' || app === 'cut-vid' || app === 'upscale' || app === 'yt-dl')) {
+    return (
+      <div className="ma-root">
+        <FileJobTool key={app} app={app} card={card} onBack={() => setApp('hub')} />
       </div>
     )
   }

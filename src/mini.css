@@ -818,3 +818,83 @@
   .ma-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .wb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* ===== MiniApp — phần chạy thật (cầu nối /api/mini/*) ===== */
+.ma-card-soon {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  border: 1px solid var(--ma-border);
+}
+.ma-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  min-width: 0;
+}
+.ma-row .ma-muted { overflow-wrap: anywhere; }
+.ma-input, .ma-num {
+  border: 1px solid var(--ma-border);
+  background: #0f1522;
+  color: #e8eef6;
+  border-radius: 9px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.ma-input { width: 100%; margin-top: 8px; }
+.ma-num { width: 90px; }
+.ma-input:focus, .ma-num:focus { outline: none; border-color: rgba(34, 211, 238, 0.5); }
+.ma-err { color: #fca5a5; font-size: 12px; margin-top: 6px; overflow-wrap: anywhere; }
+.ma-err:empty { display: none; }
+.ma-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #cbd5e1;
+}
+.rw-textarea.sp { min-height: 180px; }
+.ma-jobs {
+  border: 1px solid var(--ma-border);
+  background: var(--ma-panel);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ma-job {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #101826;
+}
+.ma-job-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--ma-gold);
+}
+.ma-job.xong .ma-job-dot { background: #22c55e; }
+.ma-job.loi .ma-job-dot { background: #ef4444; }
+.ma-job-main { flex: 1; min-width: 0; }
+.ma-job-name {
+  font-size: 12px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-jobs { flex-shrink: 0; max-height: 220px; overflow: auto; padding: 0 16px 12px; }
+.wb-jobs:empty { display: none; }

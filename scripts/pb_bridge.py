@@ -1198,6 +1198,333 @@ def ve_tay(path: str, cfg: dict) -> dict:
     threading.Thread(target=chay, daemon=True).start()
     return v
 
+# ───────────────────────── MiniApp ─────────────────────────
+#
+# Tab «MiniApp» của giao diện mới. Việc nặng (ffmpeg, realesrgan, yt-dlp,
+# vẽ tay) chạy nền qua `VIEC` y như tải/upscale — loai bắt đầu bằng «mini-»
+# để tab MiniApp lọc ra từ /api/util/jobs. Việc chữ (viết lại, dịch, kịch bản
+# → prompt) gọi Gemini đồng bộ, dùng chung khoá Gemini của tool cũ.
+
+OUT_MINI = os.path.join(OUT_MAC_DINH, "MiniApp")
+DUOI_ANH = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+DUOI_VIDEO = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+GEMINI_MODEL = os.environ.get("PB_GEMINI_MODEL") or "gemini-3.5-flash"
+
+
+def chon_file(loai: str = "", goc: str = "") -> list[str]:
+    """Hộp thoại chọn NHIỀU file — tiến trình riêng như `chon_thu_muc`."""
+    kieu = {"video": "*.mp4 *.mov *.mkv *.webm *.avi *.m4v",
+            "anh": "*.png *.jpg *.jpeg *.webp *.bmp",
+            "chu": "*.txt *.srt *.vtt *.ass"}.get(loai, "*.*")
+    code = ("import tkinter as tk, json, sys; from tkinter import filedialog as f; r=tk.Tk();"
+            "r.withdraw(); r.attributes('-topmost', True);"
+            "ds=f.askopenfilenames(initialdir=sys.argv[1] or None,"
+            " filetypes=[('Tệp', sys.argv[2]), ('Tất cả', '*.*')]);"
+            "print(json.dumps(list(ds)))")
+    try:
+        r = subprocess.run([sys.executable, "-c", code, goc or "", kieu], capture_output=True,
+                           text=True, encoding="utf-8", timeout=600)
+        return [p.replace("/", "\\") for p in json.loads((r.stdout or "[]").strip() or "[]")]
+    except Exception:
+        return []
+
+
+def _thu_ra(out_dir: str, con: str) -> str:
+    d = out_dir if (out_dir and os.path.isabs(out_dir)) else os.path.join(OUT_MINI, con)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _ds_file(paths, duoi) -> list[str]:
+    """File hợp lệ trong danh sách — thư mục thì lấy các file bên trong."""
+    ra = []
+    for p in paths or []:
+        p = str(p or "")
+        if os.path.isdir(p):
+            ra += sorted(os.path.join(p, x) for x in os.listdir(p) if x.lower().endswith(duoi))
+        elif os.path.isfile(p) and p.lower().endswith(duoi):
+            ra.append(p)
+    return ra
+
+
+def _thoi_luong(path: str) -> float:
+    r = subprocess.run([_exe("ffprobe"), "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=nw=1:nk=1", path], capture_output=True, text=True,
+                       creationflags=_KHONG_CUA_SO)
+    try:
+        return float((r.stdout or "0").strip())
+    except ValueError:
+        return 0.0
+
+
+def _chay_nen(loai: str, nguon: str, out_dir: str, viec_fn) -> dict:
+    """Bọc một việc MiniApp vào VIEC: viec_fn(v) trả về đường dẫn kết quả."""
+    v = VIEC._moi(loai, nguon)
+    v["out_dir"] = out_dir
+
+    def chay():
+        try:
+            ra = viec_fn(v)
+            v.update(status="xong", out_path=ra or "", msg=v.get("msg") or "Xong")
+            log("✅ %s xong → %s" % (loai, ra or out_dir), "INFO", "mini")
+        except Exception as e:
+            v.update(status="loi", msg=str(e)[:300])
+            log("❌ %s lỗi: %s" % (loai, e), "LỖI", "mini")
+
+    threading.Thread(target=chay, daemon=True).start()
+    return v
+
+
+def mini_cat_anh(paths, every: float, out_dir: str) -> dict:
+    """Mỗi `every` giây lấy một khung PNG."""
+    ds = _ds_file(paths, DUOI_VIDEO)
+    if not ds:
+        raise RuntimeError("Chưa chọn video")
+    every = max(0.1, float(every or 1))
+    out_dir = _thu_ra(out_dir, "Cat_anh")
+
+    def viec(v):
+        ff = _exe("ffmpeg")
+        for i, p in enumerate(ds, 1):
+            v["msg"] = "%d/%d · %s" % (i, len(ds), os.path.basename(p))
+            ten = os.path.splitext(os.path.basename(p))[0]
+            subprocess.run([ff, "-y", "-v", "error", "-i", p, "-vf", "fps=1/%g" % every,
+                            os.path.join(out_dir, ten + "_%04d.png")],
+                           check=True, creationflags=_KHONG_CUA_SO)
+        v["msg"] = "Xong %d video" % len(ds)
+        return ""
+
+    log("✂ Cắt ảnh %d video · %gs/khung" % (len(ds), every), "INFO", "mini")
+    return _chay_nen("mini-cut-img", ds[0], out_dir, viec)
+
+
+def mini_cat_video(paths, mode: str, value: float, out_dir: str) -> dict:
+    """mode «parts»: chia đều thành `value` phần · «secs»: mỗi phần `value` giây."""
+    ds = _ds_file(paths, DUOI_VIDEO)
+    if not ds:
+        raise RuntimeError("Chưa chọn video")
+    value = float(value or 0)
+    if value <= 0:
+        raise RuntimeError("Số phần / số giây phải > 0")
+    out_dir = _thu_ra(out_dir, "Cat_video")
+
+    def viec(v):
+        ff = _exe("ffmpeg")
+        for i, p in enumerate(ds, 1):
+            v["msg"] = "%d/%d · %s" % (i, len(ds), os.path.basename(p))
+            dai = _thoi_luong(p)
+            if dai <= 0:
+                raise RuntimeError("Không đọc được thời lượng: %s" % p)
+            doan = dai / max(1, int(value)) if mode == "parts" else value
+            goc, duoi = os.path.splitext(os.path.basename(p))
+            # Cắt lại (không -c copy) để mỗi phần bắt đầu đúng giây, không lệch keyframe.
+            subprocess.run([ff, "-y", "-v", "error", "-i", p, "-map", "0:v:0", "-map", "0:a?",
+                            "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+                            "-c:a", "aac", "-f", "segment", "-segment_time", "%.3f" % doan,
+                            "-force_key_frames", "expr:gte(t,n_forced*%.3f)" % doan,
+                            "-reset_timestamps", "1",
+                            os.path.join(out_dir, goc + "_%03d" + (duoi or ".mp4"))],
+                           check=True, creationflags=_KHONG_CUA_SO)
+        v["msg"] = "Xong %d video" % len(ds)
+        return ""
+
+    log("🎞 Cắt video %d file · %s=%g" % (len(ds), mode, value), "INFO", "mini")
+    return _chay_nen("mini-cut-vid", ds[0], out_dir, viec)
+
+
+def mini_upscale(paths, scale: int, out_dir: str) -> dict:
+    """Upscale ảnh hàng loạt — realesrgan chạy TUẦN TỰ, một tiến trình mỗi lúc."""
+    ds = _ds_file(paths, DUOI_ANH)
+    if not ds:
+        raise RuntimeError("Chưa chọn ảnh")
+    if not os.path.isfile(REALESRGAN):
+        raise RuntimeError("Không thấy realesrgan: %s (đặt PB_REALESRGAN)" % REALESRGAN)
+    scale = 4 if int(scale or 2) >= 4 else 2
+    out_dir = _thu_ra(out_dir, "Upscale")
+
+    def viec(v):
+        for i, p in enumerate(ds, 1):
+            v["msg"] = "%d/%d · %s" % (i, len(ds), os.path.basename(p))
+            ra = os.path.join(out_dir, "%s_x%d.png" % (os.path.splitext(os.path.basename(p))[0], scale))
+            r = subprocess.run([REALESRGAN, "-i", p, "-o", ra, "-s", str(scale),
+                                "-n", "realesrgan-x4plus", "-m", REALESRGAN_MODELS, "-f", "png"],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=3600, creationflags=_KHONG_CUA_SO,
+                               cwd=os.path.dirname(REALESRGAN))
+            if r.returncode != 0:
+                raise RuntimeError((r.stderr or "realesrgan lỗi").strip()[-300:])
+        v["msg"] = "Xong %d ảnh" % len(ds)
+        return ""
+
+    log("⬆ Upscale %d ảnh x%d" % (len(ds), scale), "INFO", "mini")
+    return _chay_nen("mini-upscale", ds[0], out_dir, viec)
+
+
+def mini_tai_kenh(url: str, out_dir: str, limit: int = 0) -> dict:
+    """Tải trọn kênh / playlist / link lẻ (yt-dlp, 1800+ nền tảng)."""
+    if not re.match(r"https?://", url or ""):
+        raise RuntimeError("Link không hợp lệ")
+    out_dir = _thu_ra(out_dir, "Tai_kenh")
+
+    def viec(v):
+        lenh = [_exe("yt-dlp"), "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
+                "--merge-output-format", "mp4", "--yes-playlist", "--no-warnings",
+                "--ignore-errors", "--download-archive", os.path.join(out_dir, "_da_tai.txt"),
+                "-o", os.path.join(out_dir, "%(uploader).40s", "%(title).80s [%(id)s].%(ext)s"),
+                "--print", "after_move:filepath"]
+        if int(limit or 0) > 0:
+            lenh += ["--playlist-end", str(int(limit))]
+        p = subprocess.Popen(lenh + [url], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, encoding="utf-8", errors="replace",
+                             creationflags=_KHONG_CUA_SO)
+        n, cuoi = 0, ""
+        for dong in p.stdout:
+            dong = dong.strip()
+            if os.path.isfile(dong):
+                n += 1
+                cuoi = dong
+                v["msg"] = "Đã tải %d video" % n
+                log("⬇ %s" % os.path.basename(dong), "INFO", "mini")
+            elif dong.startswith("ERROR"):
+                log("⚠ %s" % dong[:200], "INFO", "mini")
+        p.wait()
+        if n == 0 and p.returncode != 0:
+            raise RuntimeError("yt-dlp không tải được video nào (xem nhật ký)")
+        v["msg"] = "Đã tải %d video" % n
+        return cuoi
+
+    log("⬇ Tải kênh/playlist: %s" % url, "INFO", "mini")
+    return _chay_nen("mini-yt-dl", url, out_dir, viec)
+
+
+def mini_ve_tay(paths, cfg: dict) -> dict:
+    """Whiteboard hàng loạt — mỗi ảnh một việc `ve_tay` (ra cạnh ảnh gốc)."""
+    ds = _ds_file(paths, DUOI_ANH)
+    if not ds:
+        raise RuntimeError("Chưa chọn ảnh")
+    return {"jobs": [ve_tay(p, cfg) for p in ds]}
+
+
+def gemini_text(prompt: str, model: str = "") -> str:
+    """Gọi Gemini generateContent; hết hạn mức / khoá hỏng thì xoay khoá kế."""
+    import urllib.error
+    import urllib.request
+    keys = gemini_keys()
+    if not keys:
+        raise RuntimeError("Chưa có Gemini key — nhập ở Cài đặt › Tài khoản")
+    model = model or GEMINI_MODEL
+    body = json.dumps({"contents": [{"role": "user", "parts": [{"text": prompt}]}]}).encode("utf-8")
+    loi = ""
+    for k in keys:
+        url = ("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s"
+               % (model, k))
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+        try:
+            raw = urllib.request.urlopen(req, timeout=300).read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            loi = "HTTP %d: %s" % (e.code, e.read().decode("utf-8", "replace")[:200])
+            if e.code in (400, 401, 403, 429, 500, 503):
+                continue
+            raise RuntimeError("Gemini " + loi)
+        data = json.loads(raw)
+        parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        chu = "".join(p.get("text") or "" for p in parts).strip()
+        if chu:
+            return chu
+        loi = "Gemini không trả chữ (%s)" % (data.get("promptFeedback") or "rỗng")
+    raise RuntimeError(loi or "Gemini lỗi")
+
+
+def _bo_rao(chu: str) -> str:
+    """Bỏ ```…``` nếu model bọc kết quả trong khối code."""
+    m = re.match(r"^```[a-zA-Z]*\n(.*?)\n```$", chu.strip(), re.S)
+    return m.group(1) if m else chu
+
+
+def _chia_khuc(chu: str, tran: int = 8000) -> list[str]:
+    """Chia theo dòng trống (giữ trọn khối SRT) — mỗi khúc ≤ `tran` ký tự."""
+    khuc, cur = [], ""
+    for khoi in re.split(r"\n\s*\n", chu.strip()):
+        if cur and len(cur) + len(khoi) + 2 > tran:
+            khuc.append(cur)
+            cur = ""
+        cur = (cur + "\n\n" + khoi) if cur else khoi
+    if cur:
+        khuc.append(cur)
+    return khuc
+
+
+def mini_viet_lai(d: dict) -> dict:
+    script = str(d.get("script") or "").strip()
+    if not script:
+        raise RuntimeError("Chưa có kịch bản")
+    lang = str(d.get("lang") or "auto")
+    dur = int(d.get("dur") or 0)
+    yeu_cau = [
+        "Bạn là biên kịch YouTube. Viết lại kịch bản dưới đây thành bản MỚI, nguyên bản:",
+        "giữ ý chính và thông tin, đổi hoàn toàn câu chữ và cấu trúc, mở bằng hook mạnh.",
+        "Giọng điệu: %s." % (d.get("tone") or "tự nhiên"),
+    ]
+    if str(d.get("extra") or "").strip():
+        yeu_cau.append("Yêu cầu phong cách: %s." % str(d["extra"]).strip().replace("\n", "; "))
+    yeu_cau.append("Ngôn ngữ đầu ra: %s." % ("giữ ngôn ngữ của bản gốc" if lang == "auto" else lang))
+    if dur > 0:
+        yeu_cau.append("Độ dài khoảng %d phút đọc (~%d từ)." % (dur, dur * 150))
+    yeu_cau.append("Chỉ trả về kịch bản, không giải thích, không markdown.")
+    log("✏ Viết lại kịch bản (%d ký tự)" % len(script), "INFO", "mini")
+    return {"text": _bo_rao(gemini_text("\n".join(yeu_cau) + "\n\n=== KỊCH BẢN GỐC ===\n" + script))}
+
+
+def mini_dich(d: dict) -> dict:
+    chu = str(d.get("text") or "").strip()
+    lang = str(d.get("lang") or "").strip()
+    if not chu or not lang:
+        raise RuntimeError("Thiếu nội dung hoặc ngôn ngữ đích")
+    la_phu_de = bool(re.search(r"\d\d:\d\d:\d\d[,.]\d{3}\s*-->", chu))
+    luat = ("Đây là phụ đề: GIỮ NGUYÊN số thứ tự, mốc thời gian và số dòng, chỉ dịch phần lời."
+            if la_phu_de else "Giữ nguyên xuống dòng và định dạng.")
+    khuc = _chia_khuc(chu)
+    log("🌐 Dịch → %s · %d khúc" % (lang, len(khuc)), "INFO", "mini")
+    ra = [_bo_rao(gemini_text("Dịch sang %s. %s Chỉ trả về bản dịch.\n\n%s" % (lang, luat, k)))
+          for k in khuc]
+    return {"text": "\n\n".join(ra)}
+
+
+def mini_kich_ban_prompt(d: dict) -> dict:
+    """Kịch bản / SRT → danh sách cảnh, mỗi cảnh prompt ảnh + video (JSON)."""
+    chu = str(d.get("text") or "").strip()
+    if not chu:
+        raise RuntimeError("Chưa có kịch bản")
+    giay = int(d.get("clipSec") or 8)
+    yeu_cau = (
+        "Bạn là đạo diễn hình ảnh. Chia kịch bản/phụ đề dưới đây thành các cảnh khoảng %d giây. "
+        "Giữ nhân vật, trang phục, bối cảnh NHẤT QUÁN giữa các cảnh. Phong cách: %s. "
+        "Tỉ lệ khung: %s. Prompt viết bằng %s.\n"
+        "Trả về DUY NHẤT JSON: {\"bible\": \"mô tả nhân vật/bối cảnh dùng chung\", "
+        "\"scenes\": [{\"time\": \"00:00-00:08\", \"text\": \"lời thoại\", "
+        "\"img\": \"prompt ảnh\", \"vid\": \"prompt video có chuyển động máy quay\"}]}\n\n%s"
+        % (giay, d.get("style") or "cinematic", d.get("aspect") or "16:9",
+           "tiếng Việt" if d.get("outLang") == "vi" else "English", chu))
+    log("🎬 Kịch bản → prompt (%d ký tự)" % len(chu), "INFO", "mini")
+    raw = _bo_rao(gemini_text(yeu_cau))
+    m = re.search(r"\{.*\}", raw, re.S)
+    try:
+        data = json.loads(m.group(0) if m else raw)
+    except ValueError:
+        raise RuntimeError("Gemini không trả JSON hợp lệ — thử lại")
+    return {"bible": str(data.get("bible") or ""), "scenes": list(data.get("scenes") or [])}
+
+
+def doc_chu(path: str) -> str:
+    """Đọc file chữ người dùng vừa chọn (txt/srt/vtt/ass) — tối đa 5 MB."""
+    if not (os.path.isfile(path) and path.lower().endswith((".txt", ".srt", ".vtt", ".ass"))):
+        raise RuntimeError("Không đọc được: %s" % path)
+    if os.path.getsize(path) > 5 << 20:
+        raise RuntimeError("File quá lớn (>5 MB)")
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
+        return f.read()
+
+
 # ───────────────────────── tiện ích ─────────────────────────
 
 def chon_thu_muc(goc: str = "") -> str:
@@ -1415,6 +1742,34 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True})
             if u.path == "/api/refs/upload":
                 return self._json(200, {"ok": True, **luu_ref(d.get("name") or "", d.get("data") or "")})
+            if u.path == "/api/pick-files":
+                return self._json(200, {"ok": True, "paths": chon_file(str(d.get("kind") or ""),
+                                                                       str(d.get("start") or ""))})
+            if u.path == "/api/mini/read-text":
+                return self._json(200, {"ok": True, "text": doc_chu(str(d.get("path") or ""))})
+            if u.path == "/api/mini/cut-img":
+                return self._json(200, {"ok": True, **mini_cat_anh(
+                    d.get("paths"), float(d.get("every") or 1), str(d.get("out_dir") or ""))})
+            if u.path == "/api/mini/cut-vid":
+                return self._json(200, {"ok": True, **mini_cat_video(
+                    d.get("paths"), str(d.get("mode") or "parts"), float(d.get("value") or 0),
+                    str(d.get("out_dir") or ""))})
+            if u.path == "/api/mini/upscale":
+                return self._json(200, {"ok": True, **mini_upscale(
+                    d.get("paths"), int(d.get("scale") or 2), str(d.get("out_dir") or ""))})
+            if u.path == "/api/mini/yt-dl":
+                return self._json(200, {"ok": True, **mini_tai_kenh(
+                    str(d.get("url") or "").strip(), str(d.get("out_dir") or ""),
+                    int(d.get("limit") or 0))})
+            if u.path == "/api/mini/draw":
+                return self._json(200, {"ok": True, **mini_ve_tay(d.get("paths"),
+                                                                   dict(d.get("cfg") or {}))})
+            if u.path == "/api/mini/rewrite":
+                return self._json(200, {"ok": True, **mini_viet_lai(d)})
+            if u.path == "/api/mini/translate":
+                return self._json(200, {"ok": True, **mini_dich(d)})
+            if u.path == "/api/mini/script-prompt":
+                return self._json(200, {"ok": True, **mini_kich_ban_prompt(d)})
             if u.path == "/api/pick-folder":
                 return self._json(200, {"ok": True, "path": chon_thu_muc(d.get("start") or "")})
             if u.path == "/api/open-folder":
