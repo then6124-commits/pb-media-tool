@@ -6140,3 +6140,28 @@ textarea.flow-frame-box { width: 100%; resize: vertical; color: inherit; font: i
   border: 1px solid rgba(56,189,248,0.45); background: rgba(56,189,248,0.08); color: #38bdf8;
 }
 .paste-prompt:hover { background: rgba(56,189,248,0.18); }
+
+/* ===== Thanh cuộn khi thu nhỏ cửa sổ ===== */
+/* Thanh cuộn dễ thấy trên nền tối, dùng chung toàn app */
+* { scrollbar-width: thin; scrollbar-color: rgba(148,163,184,0.45) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.4); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,0.7); background-clip: padding-box; }
+
+/* Thanh tab trên cùng: hẹp thì kéo ngang, không để chữ phiên bản đè lên tab */
+.top-nav-left { overflow-x: auto; overflow-y: hidden; flex: 1 1 auto; }
+.top-nav-left::-webkit-scrollbar { height: 4px; }
+.top-tab { flex-shrink: 0; }
+
+/* Mọi tab: cửa sổ nhỏ hơn mức tối thiểu thì hiện thanh cuộn ngang/dọc thay vì bóp méo nội dung */
+.body { overflow: auto; }
+.body > * { min-width: 960px; min-height: 540px; }
+
+/* Vids / Muse: khu chính cuộn dọc, bảng kết quả luôn có chỗ hiển thị */
+.vids-main, .muse-main { overflow-y: auto !important; }
+.vids-main > .vids-queue, .muse-main > .muse-queue { flex: 1 0 380px; }
+.vids-main > .vids-topbar, .muse-main > .muse-topbar { position: sticky; top: 0; z-index: 5; }
+
+/* Ghép Video: danh sách cuộn được */
+.gv-list { overflow: auto; }

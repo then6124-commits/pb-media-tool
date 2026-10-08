@@ -370,7 +370,7 @@
   background: var(--gv-panel);
   border: 1px solid var(--gv-border);
   border-radius: 12px;
-  overflow: hidden;
+  overflow: auto;
 }
 .gv-list-head {
   display: flex;

@@ -535,3 +535,28 @@
 }
 .rs-zoom img { max-width: 90vw; max-height: 82vh; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
 .rs-zoom-cap { color: #fff; font-weight: 700; font-size: 14px; }
+
+/* RefStrip gọn: một hàng tiêu đề + nút, thẻ nhỏ hơn 10% */
+.rs-box { padding: 8px 10px 10px; }
+.rs-head { align-items: center; gap: 6px; }
+.rs-head strong { font-size: 13px; }
+.rs-head .rs-btn { padding: 3px 10px; font-size: 11.5px; border-radius: 6px; }
+.rs-head .rs-btn.add { margin-left: 4px; }
+.rs-hint { font-size: 11px; margin-left: auto; }
+.rs-actions { display: none; }
+.rs-head + .rs-strip, .rs-head + .rs-empty { margin-top: 8px; }
+.rs-card { flex: 0 0 135px; }
+.rs-card-top { padding: 2px 4px; }
+.rs-card-top button { min-width: 22px; height: 22px; font-size: 15px; }
+.rs-card-top .rs-num { font-size: 12px; font-weight: 700; color: var(--st-text); padding: 0 4px; }
+.rs-tag { padding: 4px; font-size: 11.5px; }
+.rs-empty { padding: 10px; font-size: 12px; }
+.rs-noimg {
+  aspect-ratio: 16 / 10; display: flex; align-items: center; justify-content: center; padding: 6px;
+  background: rgba(255,255,255,0.04); color: var(--st-muted); font-size: 11px; text-align: center;
+  word-break: break-all; cursor: zoom-in;
+}
+/* Cửa sổ hẹp: bảng giữ bề rộng tối thiểu và cuộn ngang trong khung, nút không xuống dòng */
+.vids-table:not(.st-grid), .muse-table:not(.st-grid) { min-width: 1000px; }
+.st-viewswitch button, .st-save-main, .vids-progress, .muse-progress { white-space: nowrap; }
+.st-save-main b { max-width: 160px; }

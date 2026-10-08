@@ -1,7 +1,7 @@
 import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Ico } from './SettingsPanes'
-import { RefStrip } from './RefStrip'
+import { RefStrip, rememberThumb } from './RefStrip'
 import './studio_sv.css'
 
 type ProjKind = 'video' | 'nano'
@@ -544,6 +544,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
         name: file.name,
         data,
       })
+      rememberThumb(r.path, data)
       setRefs((prev) => [
         ...prev.filter((x) => x.path !== r.path),
         { id: ++nextId.current, name: r.name, tag: r.tag, path: r.path },

@@ -1,7 +1,7 @@
 import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Ico } from './SettingsPanes'
-import { RefStrip } from './RefStrip'
+import { RefStrip, rememberThumb } from './RefStrip'
 import './studio_sv.css'
 
 /**
@@ -342,6 +342,7 @@ export default function MuseWorkspace() {
       const r = await fetch(`/api/upload?name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f })
       const j = (await r.json()) as { ok: boolean; path: string; tag: string; error?: string }
       if (!j.ok) throw new Error(j.error || 'lỗi')
+      rememberThumb(j.path, URL.createObjectURL(f))
       setRefs((prev) => [
         ...prev.filter((x) => x.tag !== j.tag),
         { id: Date.now() + Math.random(), name: f.name, tag: j.tag, path: j.path },

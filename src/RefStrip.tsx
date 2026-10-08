@@ -13,6 +13,24 @@ export function maAnh(name: string): string {
 
 const fileUrl = (p: string) => `/api/file?path=${encodeURIComponent(p)}`
 
+/** Ảnh vừa thêm: giữ bản đọc trên máy để hiện ngay (khỏi chờ / phụ thuộc cầu nối). */
+const THUMB = new Map<string, string>()
+export function rememberThumb(path: string, dataUrl: string) {
+  if (path && dataUrl) THUMB.set(path, dataUrl)
+}
+
+function Thumb({ r, ma, onOpen }: { r: RefItem; ma: string; onOpen: () => void }) {
+  const [hong, setHong] = useState(false)
+  if (hong) {
+    return (
+      <div className="rs-noimg" title={r.path} onClick={onOpen}>
+        {r.name || ma}
+      </div>
+    )
+  }
+  return <img src={THUMB.get(r.path) || fileUrl(r.path)} alt={ma} loading="lazy" onClick={onOpen} onError={() => setHong(true)} />
+}
+
 /**
  * Khung «Ảnh Tham Chiếu» kiểu tool cũ: + Thêm / − Xóa (đã chọn) / Xóa hết, dải thẻ ảnh có
  * số thứ tự, ✎ đổi tên file, 🗑 bỏ, + gắn @MÃ vào prompt, bấm ảnh để phóng to.
@@ -32,7 +50,6 @@ export function RefStrip({
   onInsert: (tag: string) => void
   flash: (msg: string) => void
 }) {
-  const [chon, setChon] = useState<number[]>([])
   const [phongTo, setPhongTo] = useState<RefItem | null>(null)
   const [keo, setKeo] = useState(false)
 
@@ -71,39 +88,23 @@ export function RefStrip({
       }}
     >
       <div className="rs-head">
-        <Ico n="image" size={16} />
+        <Ico n="image" size={14} />
         <strong>Ảnh Tham Chiếu</strong>
-        <span className="rs-count">({refs.length} ảnh)</span>
-        <span className="rs-hint">bấm ảnh để phóng to · trên thẻ: ✎ đổi tên file · 🗑 bỏ · + gắn vào prompt (@MÃ)</span>
-      </div>
-      <div className="rs-actions">
+        <span className="rs-count">({refs.length})</span>
         <button type="button" className="rs-btn add" onClick={onAdd}>
           + Thêm
-        </button>
-        <button
-          type="button"
-          className="rs-btn"
-          disabled={!chon.length}
-          onClick={() => {
-            setRefs((prev) => prev.filter((x) => !chon.includes(x.id)))
-            setChon([])
-          }}
-        >
-          − Xóa{chon.length ? ` (${chon.length})` : ''}
         </button>
         <button
           type="button"
           className="rs-btn danger"
           disabled={!refs.length}
           onClick={() => {
-            if (window.confirm(`Bỏ hết ${refs.length} ảnh tham chiếu khỏi danh sách?`)) {
-              setRefs(() => [])
-              setChon([])
-            }
+            if (window.confirm(`Bỏ hết ${refs.length} ảnh tham chiếu khỏi danh sách?`)) setRefs(() => [])
           }}
         >
           Xóa hết
         </button>
+        <span className="rs-hint">bấm ảnh để phóng to · ✎ đổi tên · 🗑 bỏ · + gắn @MÃ vào prompt</span>
       </div>
       {refs.length === 0 ? (
         <div className="rs-empty" onClick={onAdd}>
@@ -114,18 +115,10 @@ export function RefStrip({
         <div className="rs-strip">
           {refs.map((r, i) => {
             const ma = maAnh(r.name || r.path)
-            const on = chon.includes(r.id)
             return (
-              <div key={r.id} className={`rs-card${on ? ' on' : ''}`} title={r.name}>
+              <div key={r.id} className="rs-card" title={r.name}>
                 <div className="rs-card-top">
-                  <button
-                    type="button"
-                    className="rs-num"
-                    title="Chọn để xoá"
-                    onClick={() => setChon((p) => (p.includes(r.id) ? p.filter((x) => x !== r.id) : [...p, r.id]))}
-                  >
-                    {i + 1}
-                  </button>
+                  <span className="rs-num">{i + 1}</span>
                   <span className="grow" />
                   <button type="button" title="Đổi tên file" onClick={() => void doiTen(r)}>
                     <Ico n="pencil" size={13} />
@@ -137,7 +130,7 @@ export function RefStrip({
                     +
                   </button>
                 </div>
-                <img src={fileUrl(r.path)} alt={ma} loading="lazy" onClick={() => setPhongTo(r)} />
+                <Thumb r={r} ma={ma} onOpen={() => setPhongTo(r)} />
                 <div className="rs-tag">@{ma}</div>
               </div>
             )
@@ -146,7 +139,7 @@ export function RefStrip({
       )}
       {phongTo && (
         <div className="rs-zoom" onClick={() => setPhongTo(null)}>
-          <img src={fileUrl(phongTo.path)} alt="" />
+          <img src={THUMB.get(phongTo.path) || fileUrl(phongTo.path)} alt="" />
           <div className="rs-zoom-cap">
             @{maAnh(phongTo.name || phongTo.path)} · {phongTo.name}
           </div>
