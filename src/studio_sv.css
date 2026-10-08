@@ -483,3 +483,55 @@
 .vids-root select option, .muse-root select option { background: #0f1722; color: #e7eef7; font-weight: 600; }
 .vids-root select option:checked, .muse-root select option:checked { background: #14532d; color: #fff; }
 .st-res button { min-width: 64px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ---- Khung «Ảnh Tham Chiếu» (RefStrip) ---- */
+.rs-box {
+  margin-top: 10px; padding: 10px 12px 12px; border-radius: 12px;
+  border: 1px solid var(--st-border); background: var(--st-field);
+}
+.rs-box.drag { border-color: var(--st-acc); background: rgba(var(--st-acc-rgb), 0.06); }
+.rs-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; color: var(--st-text); }
+.rs-head .sv2-ico { align-self: center; color: var(--st-muted); }
+.rs-head strong { font-size: 14px; }
+.rs-count { color: var(--st-muted); font-size: 12px; }
+.rs-hint { color: var(--st-muted); font-size: 11.5px; margin-left: 6px; }
+.rs-actions { display: flex; gap: 8px; margin: 8px 0 10px; }
+.rs-btn {
+  padding: 5px 14px; border-radius: 7px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+  border: 1px solid var(--st-border); background: transparent; color: var(--st-text);
+}
+.rs-btn:hover:not(:disabled) { background: rgba(255,255,255,0.06); }
+.rs-btn:disabled { opacity: 0.4; cursor: default; }
+.rs-btn.add { background: rgba(var(--st-acc-rgb), 0.16); border-color: rgba(var(--st-acc-rgb), 0.6); color: var(--st-acc); }
+.rs-btn.danger { background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.55); color: #f87171; }
+.rs-empty {
+  padding: 16px; border: 1px dashed var(--st-border); border-radius: 10px; text-align: center;
+  color: var(--st-muted); font-size: 12.5px; cursor: pointer; line-height: 1.6;
+}
+.rs-empty code { color: var(--st-acc); }
+.rs-strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; }
+.rs-card {
+  flex: 0 0 150px; border: 1px solid var(--st-border); border-radius: 10px; overflow: hidden;
+  background: var(--st-card); display: flex; flex-direction: column;
+}
+.rs-card.on { border-color: var(--st-acc); box-shadow: 0 0 0 1px var(--st-acc); }
+.rs-card-top { display: flex; align-items: center; gap: 2px; padding: 4px 6px; }
+.rs-card-top button {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px;
+  border: none; background: transparent; color: var(--st-muted); border-radius: 6px; cursor: pointer;
+  font-size: 16px; font-weight: 700; line-height: 1;
+}
+.rs-card-top button:hover { background: rgba(255,255,255,0.07); color: var(--st-text); }
+.rs-card-top .rs-num { font-size: 13px; color: var(--st-text); min-width: 22px; }
+.rs-card.on .rs-num { background: var(--st-acc); color: #04120a; }
+.rs-card img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; cursor: zoom-in; background: #000; }
+.rs-tag {
+  padding: 6px 4px; text-align: center; font-size: 12px; font-weight: 700; color: var(--st-acc);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rs-zoom {
+  position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,0.82);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; cursor: zoom-out;
+}
+.rs-zoom img { max-width: 90vw; max-height: 82vh; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
+.rs-zoom-cap { color: #fff; font-weight: 700; font-size: 14px; }

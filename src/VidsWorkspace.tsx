@@ -1,6 +1,7 @@
 import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Ico } from './SettingsPanes'
+import { RefStrip } from './RefStrip'
 import './studio_sv.css'
 
 type ProjKind = 'video' | 'nano'
@@ -512,6 +513,30 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
     reader.readAsText(file)
   }
 
+  const promptRef = useRef<HTMLTextAreaElement>(null)
+  /** Gắn @MÃ vào ô prompt tại con trỏ (không có con trỏ thì nối vào dòng mã đầu prompt). */
+  const insertTag = (tag: string) => {
+    const el = promptRef.current
+    const cur = promptText
+    let at = el && document.activeElement === el ? el.selectionStart : -1
+    if (at < 0) {
+      // Đặt cuối dòng mã «NNN. @A | @B.» nếu có, không thì cuối ô
+      const m = /^\s*\d{1,4}\s*[.)]\s*(?:@[\w-]+[\s,|;/+&]*)+/.exec(cur)
+      at = m ? m[0].replace(/[\s,|;/+&]*$/, '').length : cur.length
+      const chen = m ? ` | ${tag}` : (cur && !/\s$/.test(cur) ? ' ' : '') + tag
+      setPromptText(cur.slice(0, at) + chen + cur.slice(at))
+      flash(`Đã gắn ${tag}`)
+      return
+    }
+    const chen = (at > 0 && !/\s$/.test(cur.slice(0, at)) ? ' ' : '') + tag + ' '
+    setPromptText(cur.slice(0, at) + chen + cur.slice(at))
+    window.setTimeout(() => {
+      el?.focus()
+      el?.setSelectionRange(at + chen.length, at + chen.length)
+    }, 0)
+    flash(`Đã gắn ${tag}`)
+  }
+
   const addRef = async (file: File) => {
     try {
       const data = await readAsDataUrl(file)
@@ -991,6 +1016,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
             <div className="st-compose">
             <textarea
               className="vids-textarea"
+              ref={promptRef}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 const f = e.dataTransfer.files?.[0]
@@ -1004,34 +1030,15 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
               placeholder={PROMPT_PLACEHOLDER}
               rows={7}
             />
-            <div className="vids-ref-row">
-              <button
-                type="button"
-                className="vids-ref-btn"
-                onClick={() => imgRef.current?.click()}
-              >
-                <Ico n="upload" size={14} /> + Tải ảnh tham chiếu
-              </button>
-              <span className="vids-muted">
-                Tải ảnh lên rồi gõ <code className="st-at">@Tên</code> trong prompt để AI tham chiếu nhân vật/bối cảnh.
-              </span>
             </div>
-            </div>
-            {refs.length > 0 && (
-              <div className="vids-ref-list">
-                {refs.map((r) => (
-                  <span key={r.id} className="vids-ref-tag">
-                    {r.tag}
-                    <button
-                      type="button"
-                      onClick={() => setRefs((prev) => prev.filter((x) => x.id !== r.id))}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
+            <RefStrip
+              refs={refs}
+              setRefs={setRefs}
+              onAdd={() => imgRef.current?.click()}
+              onFiles={(fs) => fs.forEach((f) => void addRef(f))}
+              onInsert={insertTag}
+              flash={flash}
+            />
             <div className="vids-run-row">
               <div className="vids-aspect">
                 <button

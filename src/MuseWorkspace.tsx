@@ -1,6 +1,7 @@
 import { ClearPromptBtn, PastePromptBtn, OnePromptCheck, cleanPromptFile, splitPrompts, useOnePrompt } from './OnePrompt'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Ico } from './SettingsPanes'
+import { RefStrip } from './RefStrip'
 import './studio_sv.css'
 
 /**
@@ -308,6 +309,30 @@ export default function MuseWorkspace() {
     reader.readAsText(f)
   }
 
+  const promptRef = useRef<HTMLTextAreaElement>(null)
+  /** Gắn @MÃ vào ô prompt tại con trỏ (không có con trỏ thì nối vào dòng mã đầu prompt). */
+  const insertTag = (tag: string) => {
+    const el = promptRef.current
+    const cur = promptText
+    let at = el && document.activeElement === el ? el.selectionStart : -1
+    if (at < 0) {
+      // Đặt cuối dòng mã «NNN. @A | @B.» nếu có, không thì cuối ô
+      const m = /^\s*\d{1,4}\s*[.)]\s*(?:@[\w-]+[\s,|;/+&]*)+/.exec(cur)
+      at = m ? m[0].replace(/[\s,|;/+&]*$/, '').length : cur.length
+      const chen = m ? ` | ${tag}` : (cur && !/\s$/.test(cur) ? ' ' : '') + tag
+      setPromptText(cur.slice(0, at) + chen + cur.slice(at))
+      flash(`Đã gắn ${tag}`)
+      return
+    }
+    const chen = (at > 0 && !/\s$/.test(cur.slice(0, at)) ? ' ' : '') + tag + ' '
+    setPromptText(cur.slice(0, at) + chen + cur.slice(at))
+    window.setTimeout(() => {
+      el?.focus()
+      el?.setSelectionRange(at + chen.length, at + chen.length)
+    }, 0)
+    flash(`Đã gắn ${tag}`)
+  }
+
   const addRef = async (f: File) => {
     if (refs.length >= 8) {
       flash('Tối đa 8 ảnh tham chiếu')
@@ -539,35 +564,22 @@ export default function MuseWorkspace() {
                 }
               }}
               className="muse-textarea"
+              ref={promptRef}
               value={promptText}
               onChange={(e) => setPromptText(e.target.value)}
               placeholder={PROMPT_PLACEHOLDER}
               rows={6}
             />
 
-            <div className="muse-ref-row">
-              <button type="button" className="muse-ref-btn" onClick={() => imgRef.current?.click()}>
-                <Ico n="upload" size={14} /> + Tải ảnh tham chiếu
-              </button>
-              <span className="muse-muted">
-                {mode === 'i2v'
-                  ? 'Prompt gọi @tên thì dùng đúng ảnh đó; không gọi thì ảnh thứ i đi với prompt thứ i. Tối đa 8 ảnh.'
-                  : 'Tuỳ chọn — gõ @tên trong prompt để gửi kèm ảnh đó. Tối đa 8 ảnh.'}
-              </span>
             </div>
-            </div>
-            {refs.length > 0 && (
-              <div className="muse-ref-list">
-                {refs.map((r) => (
-                  <span key={r.id} className="muse-ref-tag" title={r.name}>
-                    {r.tag}
-                    <button type="button" onClick={() => setRefs((prev) => prev.filter((x) => x.id !== r.id))}>
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
+            <RefStrip
+              refs={refs}
+              setRefs={setRefs}
+              onAdd={() => imgRef.current?.click()}
+              onFiles={(fs) => fs.forEach((f) => void addRef(f))}
+              onInsert={insertTag}
+              flash={flash}
+            />
 
             <div className="muse-run-row">
               <div className="muse-aspect">

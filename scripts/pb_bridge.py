@@ -3851,6 +3851,22 @@ def luu_ref(ten: str, du_lieu_b64: str) -> dict:
     return {"path": p, "name": ten, "tag": "@" + ma_cua_anh(ten)}
 
 
+def doi_ten_ref(path: str, ten_moi: str) -> dict:
+    """Đổi tên ảnh tham chiếu (vd thành CHAR_01_O4_lily) → mã mới. Chép sang tên mới, giữ
+    file cũ để việc đang chờ trong hàng đợi vẫn tìm thấy ảnh."""
+    goc = os.path.abspath(str(path or ""))
+    if os.path.dirname(goc) != os.path.abspath(REF_DIR) or not os.path.isfile(goc):
+        raise RuntimeError("Không thấy ảnh tham chiếu này (tải lại ảnh rồi đổi tên)")
+    duoi = os.path.splitext(goc)[1]
+    ten = re.sub(r'[\\/:*?"<>|]+', "_", os.path.splitext(str(ten_moi or "").strip())[0]).strip(" .")
+    if not ten:
+        raise RuntimeError("Tên mới trống")
+    moi = os.path.join(REF_DIR, ten + duoi)
+    if os.path.abspath(moi) != goc:
+        shutil.copy2(goc, moi)
+    return {"path": moi, "name": ten + duoi, "tag": "@" + ma_cua_anh(ten + duoi)}
+
+
 def han_muc_gan_nhat() -> list[dict]:
     try:
         import google_vids_api as gva
@@ -3934,6 +3950,9 @@ class XuLy(BaseHTTPRequestHandler):
                 cho_phep = file_cua_app()
                 trong_out = any(os.path.abspath(p).startswith(os.path.abspath(g) + os.sep)
                                 for g in (OUT_MAC_DINH, os.path.join(REF_DIR, "upload")))
+                # Ảnh tham chiếu đã tải lên (nằm thẳng trong REF_DIR) — để hiện ảnh nhỏ trên thẻ
+                trong_out = trong_out or (os.path.dirname(os.path.abspath(p)) == os.path.abspath(REF_DIR)
+                                          and p.lower().endswith(DUOI_ANH))
                 if (p not in cho_phep and not trong_out) or not os.path.isfile(p):
                     return self._json(404, {"ok": False})
                 with open(p, "rb") as f:
@@ -4045,6 +4064,8 @@ class XuLy(BaseHTTPRequestHandler):
             if u.path == "/api/flow/clear":
                 FLOW.xoa(str(d.get("kind") or "anh"))
                 return self._json(200, {"ok": True})
+            if u.path == "/api/refs/rename":
+                return self._json(200, {"ok": True, **doi_ten_ref(d.get("path") or "", d.get("name") or "")})
             if u.path == "/api/refs/upload":
                 return self._json(200, {"ok": True, **luu_ref(d.get("name") or "", d.get("data") or "")})
             if u.path == "/api/clipboard":
