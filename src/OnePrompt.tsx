@@ -118,7 +118,7 @@ export function ClearPromptBtn({ value, setValue }: { value: string; setValue: (
         setValue('')
       }}
     >
-      ✕ Xoá prompt
+      Xoá prompt
     </button>
   )
 }
