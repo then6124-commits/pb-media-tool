@@ -270,8 +270,51 @@ def ma_cua_anh(ten_file: str) -> str:
     return (m.group(0) if m else goc).upper()
 
 
+# Dòng mã đầu prompt: «001. @CHAR_01 | @BG_02. A woman…» → [CHAR_01, BG_02]
+_DAU_MA = re.compile(r"^\s*(?:\d{1,4}\s*[.)\-:]\s*)?((?:@[\w\-]+[\s,|;/+&]*)+)")
+
+
+def ma_dau_prompt(prompt: str) -> list[str]:
+    """Các mã @… đứng liền ở ĐẦU prompt (sau số cảnh nếu có), giữ thứ tự."""
+    m = _DAU_MA.match(prompt or "")
+    if not m:
+        return []
+    ra = []
+    for t in re.findall(r"@([\w\-]+)", m.group(1)):
+        t = t.upper()
+        if t not in ra:
+            ra.append(t)
+    return ra
+
+
 def chon_ref(prompt: str, refs: list[dict], tran: int = 10) -> list[str]:
-    """Ảnh mà prompt GỌI TÊN, theo thứ tự xuất hiện trong prompt."""
+    """Ảnh tham chiếu gửi kèm prompt.
+
+    Prompt mở đầu bằng dòng mã («001. @CHAR_01 | @BG_02. …») → CHỈ gửi đúng ảnh
+    của các mã đó, đúng thứ tự trong dòng mã; mã nhắc ở phần mô tả phía sau không
+    tính. Không có dòng mã → ảnh nào được gọi tên ở đâu trong prompt thì gửi,
+    theo thứ tự xuất hiện.
+    """
+    dau = ma_dau_prompt(prompt)
+    if dau:
+        theo_ma = {}
+        for r in refs:
+            p = r.get("path") or ""
+            if not os.path.isfile(p):
+                continue
+            for khoa in (ma_cua_anh(p), str(r.get("tag") or "").lstrip("@").upper()):
+                if khoa and khoa not in theo_ma:
+                    theo_ma[khoa] = p
+        ra = []
+        for ma in dau:
+            p = theo_ma.get(ma)
+            if p and p not in ra:
+                ra.append(p)
+        thieu = [m for m in dau if m not in theo_ma]
+        if thieu:
+            log("⚠ Dòng mã gọi %s nhưng chưa tải ảnh có mã đó lên." % ", ".join("@" + m for m in thieu),
+                "WARN", "ref")
+        return ra[:tran]
     up = prompt.upper()
     co = []
     for r in refs:
