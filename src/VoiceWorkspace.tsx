@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { api, dirName, errText, fileUrl, openFolder, useJobs } from './bridge'
 import './voice.css'
 
 type EngineId = 'gemini' | 'eleven' | 'capcut' | 'omni'
@@ -10,6 +11,8 @@ type Segment = {
   duration: string
   status: SegStatus
   selected: boolean
+  path?: string
+  err?: string
 }
 
 type ElevenVoice = {
@@ -110,6 +113,20 @@ const EL_MODELS = [
     desc: 'Nhanh, hỗ trợ đa ngôn ngữ',
   },
 ]
+
+const EL_LANG_CODE: Record<string, string> = {
+  Vietnamese: 'vi',
+  English: 'en',
+  Afrikaans: 'af',
+  Arabic: 'ar',
+  Armenian: 'hy',
+  Assamese: 'as',
+  Azerbaijani: 'az',
+  Belarusian: 'be',
+  Bengali: 'bn',
+  Bosnian: 'bs',
+  Bulgarian: 'bg',
+}
 
 const EL_LANGS = [
   'Vietnamese',
@@ -227,6 +244,7 @@ function SegmentsPanel({
   emptyHint,
   showProxyCta,
   onOpenProxy,
+  disabledReason,
 }: {
   segs: Segment[]
   setSegs: (s: Segment[]) => void
@@ -235,9 +253,36 @@ function SegmentsPanel({
   emptyHint: string
   showProxyCta?: boolean
   onOpenProxy?: () => void
+  disabledReason?: string
 }) {
   const selected = segs.filter((s) => s.selected).length
   const done = segs.filter((s) => s.status === 'xong').length
+  const [gap, setGap] = useState(500)
+  const [joinMsg, setJoinMsg] = useState('')
+  const joinJobs = useJobs(['voice-noi'])
+  const lastJoin = joinJobs[0]
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  function play(path?: string) {
+    if (!path) return
+    audioRef.current?.pause()
+    audioRef.current = new Audio(fileUrl(path))
+    void audioRef.current.play()
+  }
+
+  async function joinAll() {
+    setJoinMsg('')
+    try {
+      await api('/api/voice/join', {
+        paths: segs.filter((s) => s.status === 'xong' && s.path).map((s) => s.path),
+        gap_ms: gap,
+      })
+    } catch (e) {
+      setJoinMsg(errText(e))
+    }
+  }
+
+  const firstDone = segs.find((s) => (s.selected || selected === 0) && s.path)
   const allChecked = segs.length > 0 && segs.every((s) => s.selected)
 
   return (
@@ -251,10 +296,11 @@ function SegmentsPanel({
           <button
             type="button"
             className="vo-btn primary"
-            disabled={segs.length === 0 || running}
+            disabled={segs.length === 0 || running || !!disabledReason}
+            title={disabledReason}
             onClick={onRun}
           >
-            ▶ Chạy TTS
+            {running ? '… Đang đọc' : '▶ Chạy TTS'}
           </button>
           <button
             type="button"
@@ -272,17 +318,53 @@ function SegmentsPanel({
           >
             ↻ Chạy lại
           </button>
-          <button type="button" className="vo-btn" disabled={selected === 0}>
-            ⬇ Tải riêng ({selected})
+          <button
+            type="button"
+            className="vo-btn"
+            disabled={!firstDone}
+            title="Mở thư mục chứa file đã đọc"
+            onClick={() => firstDone?.path && openFolder(dirName(firstDone.path))}
+          >
+            📂 Mở thư mục
           </button>
-          <button type="button" className="vo-btn" disabled={done === 0}>
-            ⛓ Nối File ({done}) 500ms
+          <button type="button" className="vo-btn" disabled={done === 0 || running} onClick={() => void joinAll()}>
+            ⛓ Nối File ({done}) {gap}ms
           </button>
-          <button type="button" className="vo-icon-btn" title="Cài đặt">
-            ⚙
-          </button>
+          <select
+            className="vo-icon-btn"
+            title="Khoảng lặng giữa các đoạn khi nối"
+            value={gap}
+            onChange={(e) => setGap(Number(e.target.value))}
+          >
+            {[0, 200, 300, 500, 800, 1000].map((g) => (
+              <option key={g} value={g}>
+                {g}ms
+              </option>
+            ))}
+          </select>
         </div>
       </div>
+      {(disabledReason || joinMsg || lastJoin) && (
+        <div className="vo-join-bar">
+          {disabledReason && <span className="vo-join-err">{disabledReason}</span>}
+          {joinMsg && <span className="vo-join-err">{joinMsg}</span>}
+          {lastJoin && (
+            <>
+              <span>
+                {lastJoin.status === 'dang_chay' ? '⏳ Đang nối…' : lastJoin.status === 'xong' ? '✅ Đã nối' : '❌ ' + lastJoin.msg}
+              </span>
+              {lastJoin.status === 'xong' && lastJoin.out_path && (
+                <>
+                  <audio controls src={fileUrl(lastJoin.out_path)} />
+                  <button type="button" className="vo-btn" onClick={() => openFolder(dirName(lastJoin.out_path))}>
+                    📂
+                  </button>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {segs.length === 0 ? (
         <div className="vo-empty">
@@ -336,11 +418,19 @@ function SegmentsPanel({
                   <td className="vo-seg-text">{s.text}</td>
                   <td>{s.duration}</td>
                   <td>
-                    <span className={`vo-st ${s.status}`}>{statusLabel(s.status)}</span>
+                    <span className={`vo-st ${s.status}`} title={s.err}>
+                      {statusLabel(s.status)}
+                    </span>
                   </td>
                   <td>
                     <div className="vo-row-acts">
-                      <button type="button" className="vo-mini" title="Nghe" disabled={s.status !== 'xong'}>
+                      <button
+                        type="button"
+                        className="vo-mini"
+                        title="Nghe"
+                        disabled={s.status !== 'xong'}
+                        onClick={() => play(s.path)}
+                      >
                         ▶
                       </button>
                       <button
@@ -392,7 +482,6 @@ function GeminiPanel({
   const fileRef = useRef<HTMLInputElement>(null)
 
   const lang = GEM_LANGS[langIdx]
-  const voiceId = `vi-VN-Chirp3-HD-${voice}`
   const chars = text.length
   const need = Math.max(0, MIN_CHARS - chars)
 
@@ -648,10 +737,18 @@ function ElevenPanel({
   const [favs, setFavs] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(EL_VOICES.map((v) => [v.id, !!v.fav])),
   )
+  const [allVoices, setAllVoices] = useState<ElevenVoice[]>([])
+  const [voiceErr, setVoiceErr] = useState('')
+
+  useEffect(() => {
+    api<{ voices: ElevenVoice[] }>('/api/voice/eleven-voices', {})
+      .then((r) => setAllVoices(r.voices))
+      .catch((e) => setVoiceErr(errText(e)))
+  }, [])
   const fileRef = useRef<HTMLInputElement>(null)
 
   const chars = text.length
-  const voice = EL_VOICES.find((v) => v.id === voiceId) || EL_VOICES[0]
+  const voice = allVoices.find((v) => v.id === voiceId) || { id: voiceId, name: voiceId, desc: '' }
   const modelMeta = EL_MODELS.find((m) => m.id === model) || EL_MODELS[1]
 
   useEffect(() => {
@@ -666,14 +763,17 @@ function ElevenPanel({
 
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase()
-    if (!qq) return EL_VOICES
-    return EL_VOICES.filter(
+    const pasted = /^[A-Za-z0-9]{18,}$/.test(q.trim()) && !allVoices.some((v) => v.id === q.trim())
+    const extra = pasted ? [{ id: q.trim(), name: 'Voice ID: ' + q.trim(), desc: 'Dùng ID vừa dán' }] : []
+    if (!qq) return allVoices
+    return [...extra, ...allVoices].filter(
       (v) =>
+        v.id === q.trim() ||
         v.name.toLowerCase().includes(qq) ||
         v.desc.toLowerCase().includes(qq) ||
         v.id.toLowerCase().includes(qq),
     )
-  }, [q])
+  }, [q, allVoices])
 
   function addToQueue() {
     if (chars < MIN_CHARS) return
@@ -699,9 +799,8 @@ function ElevenPanel({
     <div className="vo-body">
       <aside className="vo-side el">
         <div className="vo-warn-banner">
-          Lưu ý: đây là chức năng phụ DEMO — team chưa ưu tiên hỗ trợ các vấn đề phát sinh nếu
-          không cấu hình đúng. Nên dùng <b>Proxy Xoay</b> (không dùng Proxy List tĩnh) cho tạo
-          giọng ElevenLabs.
+          Gọi API ElevenLabs bằng key ở cấu hình TTS của tool cũ (eleven_keys). Danh sách giọng lấy
+          từ thư viện tài khoản của bạn — hoặc dán Voice ID vào ô tìm.
         </div>
 
         <div className="vo-voice-pick">
@@ -717,6 +816,7 @@ function ElevenPanel({
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
+          {voiceErr && <div className="vo-join-err">Không tải được giọng: {voiceErr}</div>}
           <div className="vo-voice-list">
             {filtered.map((v) => (
               <button
@@ -730,9 +830,6 @@ function ElevenPanel({
                   <div className="vo-voice-desc">{v.desc}</div>
                 </div>
                 <div className="vo-voice-acts" onClick={(e) => e.stopPropagation()}>
-                  <button type="button" className="vo-mini" title="Nghe thử">
-                    🔊
-                  </button>
                   <button
                     type="button"
                     className={`vo-mini ${favs[v.id] ? 'fav' : ''}`}
@@ -747,7 +844,7 @@ function ElevenPanel({
           </div>
           <div className="vo-voice-meta">
             <span>
-              {filtered.length} / 2.5K
+              {filtered.length} / {allVoices.length}
             </span>
             <button type="button" className="vo-link sm">
               Tìm nâng cao
@@ -896,7 +993,6 @@ function ElevenPanel({
         onRun={onRun}
         running={running}
         emptyHint="Nhập văn bản trong panel bên trái rồi nhấn 'Thêm vào hàng đợi TTS' để bắt đầu."
-        showProxyCta
         onOpenProxy={onOpenSettings}
       />
     </div>
@@ -966,7 +1062,8 @@ function SimpleEnginePanel({
         setSegs={setSegs}
         onRun={onRun}
         running={running}
-        emptyHint={`Mock ${title} — nhập text rồi thêm vào hàng đợi.`}
+        emptyHint={`${title} — nhập text rồi thêm vào hàng đợi.`}
+        disabledReason={`${title} chưa hỗ trợ: không có API công khai để gọi. Dùng Gemini hoặc ElevenLabs.`}
       />
     </div>
   )
@@ -983,7 +1080,6 @@ export default function VoiceWorkspace({
   const [text, setText] = useState(() => loadStr(LS_TEXT, ''))
   const [segs, setSegs] = useState<Segment[]>(() => loadJson(LS_SEGS, []))
   const [running, setRunning] = useState(false)
-  const timerRef = useRef<number | null>(null)
 
   useEffect(() => {
     try {
@@ -998,48 +1094,63 @@ export default function VoiceWorkspace({
     saveJson(LS_SEGS, segs)
   }, [segs])
 
+  const jobs = useJobs(['voice'])
+  const [jobId, setJobId] = useState('')
+  const [runErr, setRunErr] = useState('')
+  const job = jobs.find((j) => j.id === jobId)
+
+  // Tiến độ từng đoạn từ việc nền → bảng phân đoạn
   useEffect(() => {
-    return () => {
-      if (timerRef.current) window.clearInterval(timerRef.current)
-    }
-  }, [])
-
-  function runTts() {
-    if (segs.length === 0 || running) return
-    setRunning(true)
-    let i = 0
-    const ids = segs.map((s) => s.id)
-    setSegs(segs.map((s) => ({ ...s, status: 'cho', duration: '—' })))
-
-    timerRef.current = window.setInterval(() => {
-      const id = ids[i]
+    if (!job) return
+    const items = (job as unknown as { items?: { id: number; status: SegStatus; path: string; dur: number; msg: string }[] }).items
+    if (items) {
       setSegs((prev) =>
         prev.map((s) => {
-          if (s.id === id) {
-            return {
-              ...s,
-              status: 'xong' as SegStatus,
-              duration: `${(1.2 + (s.text.length % 40) / 10).toFixed(1)}s`,
-            }
+          const it = items.find((x) => x.id === s.id)
+          if (!it) return s
+          return {
+            ...s,
+            status: it.status,
+            path: it.path || s.path,
+            err: it.msg || undefined,
+            duration: it.dur ? `${it.dur.toFixed(1)}s` : s.duration,
           }
-          if (ids[i + 1] && s.id === ids[i + 1]) {
-            return { ...s, status: 'dang_chay' as SegStatus }
-          }
-          return s
         }),
       )
-      i += 1
-      if (i >= ids.length) {
-        if (timerRef.current) window.clearInterval(timerRef.current)
-        timerRef.current = null
-        setRunning(false)
-      }
-    }, 650)
+    }
+    if (job.status !== 'dang_chay') {
+      setRunning(false)
+      if (job.status === 'loi') setRunErr(job.msg)
+    }
+  }, [job])
 
-    // mark first as running immediately
-    setSegs((prev) =>
-      prev.map((s) => (s.id === ids[0] ? { ...s, status: 'dang_chay' as SegStatus } : s)),
-    )
+  async function runTts() {
+    if (segs.length === 0 || running) return
+    // Đoạn đã xong thì thôi — trừ khi người dùng bấm «Chạy lại»
+    const todo = segs.filter((s) => s.status !== 'xong')
+    if (todo.length === 0) return
+    setRunErr('')
+    setRunning(true)
+    setSegs(segs.map((s) => (s.status !== 'xong' ? { ...s, status: 'cho', duration: '—', err: undefined } : s)))
+    const body =
+      engine === 'gemini'
+        ? { engine, voice: loadStr(LS_GEM_VOICE, 'Kore') }
+        : {
+            engine,
+            voice: loadStr(LS_EL_VOICE, ''),
+            model: loadStr(LS_EL_MODEL, 'v3'),
+            lang: EL_LANG_CODE[loadStr(LS_EL_LANG, 'Vietnamese')] || '',
+          }
+    try {
+      const r = await api<{ id: string }>('/api/voice/tts', {
+        ...body,
+        items: todo.map((s) => ({ id: s.id, text: s.text })),
+      })
+      setJobId(r.id)
+    } catch (e) {
+      setRunErr(errText(e))
+      setRunning(false)
+    }
   }
 
   const title =
@@ -1056,10 +1167,11 @@ export default function VoiceWorkspace({
       <header className="vo-top">
         <div className="vo-top-left">
           <h1>{title}</h1>
-          <span className="vo-crumb">Voice · mock UI · chưa nối TTS / cookie thật</span>
+          <span className="vo-crumb">Voice · Gemini TTS · ElevenLabs</span>
         </div>
         <EngineTabs engine={engine} onChange={setEngine} />
       </header>
+      {runErr && <div className="vo-join-bar"><span className="vo-join-err">{runErr}</span></div>}
 
       {engine === 'gemini' && (
         <GeminiPanel
@@ -1085,7 +1197,7 @@ export default function VoiceWorkspace({
       {engine === 'capcut' && (
         <SimpleEnginePanel
           title="CapCut"
-          note="Mock CapCut TTS — UI placeholder, chưa nối CapCut / cookie."
+          note="CapCut TTS chưa hỗ trợ: CapCut không có API công khai cho giọng đọc."
           text={text}
           setText={setText}
           segs={segs}
@@ -1097,7 +1209,7 @@ export default function VoiceWorkspace({
       {engine === 'omni' && (
         <SimpleEnginePanel
           title="OmniVoice"
-          note="Mock OmniVoice (Colab) — UI placeholder, chưa nối Colab runtime."
+          note="OmniVoice (Colab) chưa hỗ trợ: cần URL máy chủ Colab của bạn và giao thức của notebook đó."
           text={text}
           setText={setText}
           segs={segs}

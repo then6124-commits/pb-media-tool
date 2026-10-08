@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { api, baseName, errText, fileUrl, openFolder, pickFiles, pickFolder, useJobs } from './bridge'
 import './ghep.css'
 
 type Props = {
@@ -9,9 +10,17 @@ type LoadState = 'empty' | 'error' | 'loading' | 'ok'
 
 type VideoItem = {
   id: number
+  path: string
   name: string
-  dur: string
+  dur: number
+  w: number
+  h: number
   selected: boolean
+}
+
+function fmtDur(sec: number) {
+  const s = Math.round(sec)
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
 const LS_MUSIC = 'pb.ghep.music'
@@ -56,12 +65,6 @@ function loadNum(key: string, fallback: number) {
   return fallback
 }
 
-const DEMO_VIDEOS: VideoItem[] = [
-  { id: 1, name: 'scene_01.mp4', dur: '0:08', selected: true },
-  { id: 2, name: 'scene_02.mp4', dur: '0:10', selected: true },
-  { id: 3, name: 'scene_03.mp4', dur: '0:07', selected: false },
-]
-
 export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
   const [music, setMusic] = useState(() => loadStr(LS_MUSIC, ''))
   const [loopAudio, setLoopAudio] = useState(() => loadBool(LS_LOOP_AUDIO, true))
@@ -69,13 +72,15 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
   const [muteOrig, setMuteOrig] = useState(() => loadBool(LS_MUTE, true))
   const [vol, setVol] = useState(() => loadNum(LS_VOL, 100))
   const [targetSec, setTargetSec] = useState(() => loadNum(LS_TARGET, 60))
-  const [folder, setFolder] = useState(() => loadStr(LS_FOLDER, 'K:\\Output\\Videos'))
+  const [folder, setFolder] = useState(() => loadStr(LS_FOLDER, ''))
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [loadState, setLoadState] = useState<LoadState>('error')
+  const [loadState, setLoadState] = useState<LoadState>('empty')
+  const [loadErr, setLoadErr] = useState('')
   const [videos, setVideos] = useState<VideoItem[]>([])
   const [toast, setToast] = useState<string | null>(null)
   const [merging, setMerging] = useState(false)
-  const musicRef = useRef<HTMLInputElement>(null)
+  const jobs = useJobs(['ghep'])
+  const lastJob = jobs[0]
   const settingsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -107,48 +112,98 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
     return () => document.removeEventListener('mousedown', onDoc)
   }, [])
 
-  function reload() {
+  async function reload(dir = folder) {
+    if (!dir.trim()) {
+      setLoadState('empty')
+      setSettingsOpen(true)
+      return
+    }
     setLoadState('loading')
+    setLoadErr('')
     setVideos([])
-    window.setTimeout(() => {
-      // Mock: folder empty / missing → error + empty (matches SuperVeo default)
-      const ok = folder.trim().toLowerCase().includes('demo')
-      if (ok) {
-        setVideos(DEMO_VIDEOS.map((v) => ({ ...v })))
-        setLoadState('ok')
-        setToast('Đã tải danh sách video (mock).')
-      } else {
-        setVideos([])
-        setLoadState('error')
-        setToast('Không tải được thư mục video — kiểm tra Cài đặt.')
-      }
-    }, 450)
+    try {
+      const r = await api<{ items: { path: string; name: string; dur: number; w: number; h: number }[] }>(
+        '/api/ghep/list',
+        { folder: dir.trim() },
+      )
+      setVideos(r.items.map((v, i) => ({ ...v, id: i + 1, selected: true })))
+      setLoadState(r.items.length ? 'ok' : 'empty')
+      if (r.items.length) setToast(`Đã tải ${r.items.length} video.`)
+    } catch (e) {
+      setLoadErr(errText(e))
+      setLoadState('error')
+    }
   }
 
-  function pickMusic(file: File | null) {
-    if (!file) return
-    setMusic(file.name)
-    setToast(`Đã chọn nhạc: ${file.name}`)
+  useEffect(() => {
+    if (folder.trim()) void reload(folder)
+    // chỉ quét một lần lúc mở tab
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function chooseFolder() {
+    try {
+      const p = await pickFolder(folder)
+      if (!p) return
+      setFolder(p)
+      setSettingsOpen(false)
+      void reload(p)
+    } catch (e) {
+      setToast(errText(e))
+    }
+  }
+
+  async function chooseMusic() {
+    try {
+      const [p] = await pickFiles('audio', false)
+      if (!p) return
+      setMusic(p)
+      setToast(`Đã chọn nhạc: ${baseName(p)}`)
+    } catch (e) {
+      setToast(errText(e))
+    }
   }
 
   function clearMusic() {
     setMusic('')
-    if (musicRef.current) musicRef.current.value = ''
   }
 
   function toggleAll(checked: boolean) {
     setVideos((prev) => prev.map((v) => ({ ...v, selected: checked })))
   }
 
-  function mergeSelected() {
+  function move(id: number, d: -1 | 1) {
+    setVideos((prev) => {
+      const i = prev.findIndex((v) => v.id === id)
+      const j = i + d
+      if (i < 0 || j < 0 || j >= prev.length) return prev
+      const next = [...prev]
+      ;[next[i], next[j]] = [next[j], next[i]]
+      return next
+    })
+  }
+
+  async function mergeSelected() {
     const sel = videos.filter((v) => v.selected)
     if (sel.length === 0 || merging) return
     setMerging(true)
-    setToast(`Đang ghép ${sel.length} clip (mock)…`)
-    window.setTimeout(() => {
+    try {
+      await api('/api/ghep/merge', {
+        paths: sel.map((v) => v.path),
+        music,
+        loopAudio,
+        muteOrig,
+        vol,
+        loopVideo,
+        targetSec,
+        out_dir: folder ? `${folder.replace(/[\\/]+$/, '')}\\Ghep` : '',
+      })
+      setToast(`Đang ghép ${sel.length} clip…`)
+    } catch (e) {
+      setToast(errText(e))
+    } finally {
       setMerging(false)
-      setToast(`Đã ghép xong ${sel.length} clip (mock UI).`)
-    }, 1200)
+    }
   }
 
   const allChecked = videos.length > 0 && videos.every((v) => v.selected)
@@ -164,7 +219,7 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
             </span>
             Ghép Video
           </div>
-          <div className="gv-crumb">Nối clip · nhạc nền · mock UI</div>
+          <div className="gv-crumb">Nối clip · nhạc nền · lặp video (ffmpeg)</div>
         </div>
         <div className="gv-top-actions">
           <div className="gv-settings-wrap" ref={settingsRef}>
@@ -187,8 +242,12 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
                     placeholder="K:\Output\Videos"
                   />
                 </div>
+                <button type="button" className="gv-btn block" onClick={() => void chooseFolder()}>
+                  📁 Chọn thư mục…
+                </button>
                 <div className="gv-settings-hint">
-                  Gõ đường dẫn có chữ <b>demo</b> rồi bấm Tải lại để xem danh sách mock.
+                  Quét mọi video (.mp4 .mov .mkv .webm…) trong thư mục, xếp theo tên. Video ghép lưu vào
+                  thư mục con <b>Ghep</b>.
                 </div>
                 <button
                   type="button"
@@ -203,7 +262,7 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
               </div>
             )}
           </div>
-          <button type="button" className="gv-btn primary" onClick={reload} disabled={loadState === 'loading'}>
+          <button type="button" className="gv-btn primary" onClick={() => void reload()} disabled={loadState === 'loading'}>
             {loadState === 'loading' ? '… Đang tải' : '↻ Tải lại'}
           </button>
         </div>
@@ -221,22 +280,16 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
             <button
               type="button"
               className="gv-music-btn"
-              onClick={() => musicRef.current?.click()}
+              onClick={() => void chooseMusic()}
+              title={music}
             >
-              🎵 {music ? music : 'Chọn file nhạc'}
+              🎵 {music ? baseName(music) : 'Chọn file nhạc'}
             </button>
             {music && (
               <button type="button" className="gv-icon-btn" title="Xóa nhạc" onClick={clearMusic}>
                 ✕
               </button>
             )}
-            <input
-              ref={musicRef}
-              type="file"
-              accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg"
-              hidden
-              onChange={(e) => pickMusic(e.target.files?.[0] || null)}
-            />
           </div>
 
           <label className="gv-check">
@@ -330,7 +383,7 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
                   onChange={(e) => setTargetSec(Math.max(1, Number(e.target.value) || 1))}
                   className="gv-num"
                 />
-                <span className="gv-muted">Video sẽ lặp đến khi đủ {targetSec}s (mock)</span>
+                <span className="gv-muted">Video sẽ lặp đến khi đủ {targetSec}s</span>
               </div>
             </div>
           )}
@@ -346,7 +399,7 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
 
       {loadState === 'error' && (
         <div className="gv-error">
-          Không thể tải danh sách video. Vui lòng kiểm tra thư mục video và thử lại.
+          Không thể tải danh sách video: {loadErr || 'kiểm tra thư mục video và thử lại.'}
         </div>
       )}
 
@@ -372,6 +425,9 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
                 </label>
               </div>
               <div className="gv-list-actions">
+                <span className="gv-muted">
+                  Tổng {fmtDur(videos.filter((v) => v.selected).reduce((t, v) => t + v.dur, 0))}
+                </span>
                 <button
                   type="button"
                   className="gv-btn primary"
@@ -390,7 +446,8 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
                     <th className="col-num">#</th>
                     <th>Tên file</th>
                     <th className="col-dur">Độ dài</th>
-                    <th className="col-st">Trạng thái</th>
+                    <th className="col-st">Khung</th>
+                    <th className="col-st" />
                   </tr>
                 </thead>
                 <tbody>
@@ -410,10 +467,20 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
                         />
                       </td>
                       <td>{i + 1}</td>
-                      <td className="gv-name">🎬 {v.name}</td>
-                      <td>{v.dur}</td>
+                      <td className="gv-name" title={v.path}>🎬 {v.name}</td>
+                      <td>{fmtDur(v.dur)}</td>
                       <td>
-                        <span className="gv-st ready">Sẵn</span>
+                        <span className="gv-st ready">
+                          {v.w}×{v.h}
+                        </span>
+                      </td>
+                      <td>
+                        <button type="button" className="gv-icon-btn" title="Lên" onClick={() => move(v.id, -1)}>
+                          ↑
+                        </button>
+                        <button type="button" className="gv-icon-btn" title="Xuống" onClick={() => move(v.id, 1)}>
+                          ↓
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -443,6 +510,28 @@ export default function GhepVideoWorkspace({ onOpenSettings }: Props) {
           </div>
         )}
       </section>
+
+      {lastJob && (
+        <section className="gv-result">
+          <div className="gv-list-head">
+            <div className="gv-list-title">
+              {lastJob.status === 'dang_chay' ? '⏳' : lastJob.status === 'xong' ? '✅' : '❌'} Ghép gần nhất ·{' '}
+              {lastJob.msg || 'Đang chạy…'}
+            </div>
+            {lastJob.status === 'xong' && lastJob.out_path && (
+              <div className="gv-list-actions">
+                <span className="gv-muted">{baseName(lastJob.out_path)}</span>
+                <button type="button" className="gv-btn" onClick={() => openFolder(lastJob.out_dir || '')}>
+                  📂 Mở thư mục
+                </button>
+              </div>
+            )}
+          </div>
+          {lastJob.status === 'xong' && lastJob.out_path && (
+            <video className="gv-preview" src={fileUrl(lastJob.out_path)} controls />
+          )}
+        </section>
+      )}
 
       {toast && <div className="gv-toast">{toast}</div>}
     </div>

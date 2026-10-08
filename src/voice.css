@@ -673,3 +673,14 @@
     max-height: 46vh;
   }
 }
+
+.vo-join-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.vo-join-bar audio { height: 32px; max-width: 320px; }
+.vo-join-err { color: #fca5a5; overflow-wrap: anywhere; }

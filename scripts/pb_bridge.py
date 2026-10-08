@@ -1215,7 +1215,8 @@ def chon_file(loai: str = "", goc: str = "") -> list[str]:
     """Hộp thoại chọn NHIỀU file — tiến trình riêng như `chon_thu_muc`."""
     kieu = {"video": "*.mp4 *.mov *.mkv *.webm *.avi *.m4v",
             "anh": "*.png *.jpg *.jpeg *.webp *.bmp",
-            "chu": "*.txt *.srt *.vtt *.ass"}.get(loai, "*.*")
+            "chu": "*.txt *.srt *.vtt *.ass",
+            "audio": "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"}.get(loai, "*.*")
     code = ("import tkinter as tk, json, sys; from tkinter import filedialog as f; r=tk.Tk();"
             "r.withdraw(); r.attributes('-topmost', True);"
             "ds=f.askopenfilenames(initialdir=sys.argv[1] or None,"
@@ -1257,19 +1258,26 @@ def _thoi_luong(path: str) -> float:
         return 0.0
 
 
-def _chay_nen(loai: str, nguon: str, out_dir: str, viec_fn) -> dict:
-    """Bọc một việc MiniApp vào VIEC: viec_fn(v) trả về đường dẫn kết quả."""
+def _chay_nen(loai: str, nguon: str, out_dir: str, viec_fn, tag: str = "mini") -> dict:
+    """Bọc một việc chạy nền vào VIEC: viec_fn(v) trả về đường dẫn kết quả.
+
+    viec_fn tự đặt v["msg"] lúc chạy; xong mà msg vẫn là «…» thì thay bằng «Xong»."""
     v = VIEC._moi(loai, nguon)
     v["out_dir"] = out_dir
 
     def chay():
         try:
             ra = viec_fn(v)
-            v.update(status="xong", out_path=ra or "", msg=v.get("msg") or "Xong")
-            log("✅ %s xong → %s" % (loai, ra or out_dir), "INFO", "mini")
+            msg = v.get("msg") or ""
+            v.update(status="xong", out_path=ra or "",
+                     msg="Xong" if (not msg or msg.endswith("…")) else msg)
+            log("✅ %s xong → %s" % (loai, ra or out_dir), "INFO", tag)
+        except subprocess.CalledProcessError as e:
+            v.update(status="loi", msg="ffmpeg lỗi (mã %s)" % e.returncode)
+            log("❌ %s lỗi: %s" % (loai, e), "LỖI", tag)
         except Exception as e:
             v.update(status="loi", msg=str(e)[:300])
-            log("❌ %s lỗi: %s" % (loai, e), "LỖI", "mini")
+            log("❌ %s lỗi: %s" % (loai, e), "LỖI", tag)
 
     threading.Thread(target=chay, daemon=True).start()
     return v
@@ -1525,6 +1533,425 @@ def doc_chu(path: str) -> str:
         return f.read()
 
 
+# ───────────────────────── Giọng đọc · phiên âm · cấu hình ─────────────────────────
+#
+# Dùng chung cho Voice, InVideo, Creator. Khoá Gemini / ElevenLabs đọc CHUNG
+# cấu hình TTS của tool cũ (tts.load_config) — nhập một chỗ, tab nào cũng dùng.
+# Khoá chỉ cầu nối mới cần (Pexels…) để riêng ở %LOCALAPPDATA%\PBMedia\pb_bridge.json.
+
+CAU_HINH = os.path.join(LOCAL, "PBMedia", "pb_bridge.json")
+GEMINI_TTS_MODEL = os.environ.get("PB_GEMINI_TTS_MODEL") or "gemini-2.5-flash-preview-tts"
+_CH_LOCK = threading.Lock()
+
+
+def cau_hinh(moi: dict | None = None) -> dict:
+    with _CH_LOCK:
+        try:
+            with open(CAU_HINH, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = {}
+        if moi:
+            cfg.update({k: v for k, v in moi.items() if isinstance(v, (str, int, float, bool))})
+            os.makedirs(os.path.dirname(CAU_HINH), exist_ok=True)
+            with open(CAU_HINH, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=1)
+        return cfg
+
+
+def _tts_cfg() -> dict:
+    try:
+        import tts
+        return tts.load_config() or {}
+    except Exception:
+        return {}
+
+
+def _ds_khoa(raw) -> list[str]:
+    return [x.strip() for x in str(raw or "").replace(",", "\n").splitlines() if x.strip()]
+
+
+def gemini_keys_an_toan() -> list[str]:
+    try:
+        return gemini_keys()
+    except Exception:
+        return []
+
+
+def eleven_keys() -> list[str]:
+    cfg = _tts_cfg()
+    return _ds_khoa(cfg.get("eleven_keys") or cfg.get("eleven_key") or cau_hinh().get("eleven_keys"))
+
+
+def _http_json(url: str, body: dict | None, headers: dict | None = None, timeout: int = 300):
+    """POST/GET JSON → (mã, bytes). Không ném lỗi HTTP — để caller xoay khoá."""
+    import urllib.error
+    import urllib.request
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    h = {"Content-Type": "application/json"}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=data, headers=h)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def _ghi_wav(path: str, pcm: bytes, rate: int = 24000) -> None:
+    import wave
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+
+
+def tts_gemini(text: str, voice: str, out_path: str, style: str = "") -> str:
+    """Gemini TTS → WAV 24 kHz. Hết hạn mức thì xoay khoá; cả rổ hết thì chờ rồi thử lại."""
+    keys = gemini_keys()
+    if not keys:
+        raise RuntimeError("Chưa có Gemini key — nhập ở Cài đặt › Tài khoản")
+    loi = ""
+    for vong in range(3):
+        for k in keys:
+            ma, raw = _http_json(
+                "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s"
+                % (GEMINI_TTS_MODEL, k),
+                {"contents": [{"parts": [{"text": (style.strip() + "\n\n" if style.strip() else "") + text}]}],
+                 "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
+                     "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice or "Kore"}}}}})
+            if ma != 200:
+                loi = "Gemini TTS HTTP %d: %s" % (ma, raw[:200].decode("utf-8", "replace"))
+                continue
+            data = json.loads(raw)
+            parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+            b64 = next((p["inlineData"]["data"] for p in parts if p.get("inlineData")), "")
+            if b64:
+                _ghi_wav(out_path, base64.b64decode(b64))
+                return out_path
+            loi = "Gemini TTS không trả âm thanh"
+        if "HTTP 429" in loi and vong < 2:
+            log("⚠ Gemini TTS hết hạn mức — chờ 30s rồi thử lại", "INFO", "voice")
+            time.sleep(30)
+            continue
+        break
+    raise RuntimeError(loi)
+
+
+ELEVEN_MODEL = {"v4": "eleven_v4", "v3": "eleven_v3", "flash": "eleven_flash_v2_5",
+                "multilingual": "eleven_multilingual_v2"}
+
+
+def tts_eleven(text: str, voice_id: str, out_path: str, model: str = "", lang: str = "") -> str:
+    keys = eleven_keys()
+    if not keys:
+        raise RuntimeError("Chưa có ElevenLabs key — nhập ở Cài đặt › Tài khoản (tool cũ)")
+    if not voice_id:
+        raise RuntimeError("Chưa chọn giọng ElevenLabs")
+    body = {"text": text, "model_id": ELEVEN_MODEL.get(model, model or "eleven_multilingual_v2")}
+    if lang:
+        body["language_code"] = lang
+    loi = ""
+    for k in keys:
+        ma, raw = _http_json("https://api.elevenlabs.io/v1/text-to-speech/%s?output_format=mp3_44100_128"
+                             % voice_id, body, {"xi-api-key": k, "Accept": "audio/mpeg"})
+        if ma == 200 and len(raw) > 100:
+            with open(out_path, "wb") as f:
+                f.write(raw)
+            return out_path
+        loi = "ElevenLabs HTTP %d: %s" % (ma, raw[:200].decode("utf-8", "replace"))
+    raise RuntimeError(loi)
+
+
+def eleven_ds_giong() -> list[dict]:
+    keys = eleven_keys()
+    if not keys:
+        raise RuntimeError("Chưa có ElevenLabs key")
+    ma, raw = _http_json("https://api.elevenlabs.io/v2/voices?page_size=100", None,
+                         {"xi-api-key": keys[0]}, timeout=60)
+    if ma != 200:
+        raise RuntimeError("ElevenLabs HTTP %d" % ma)
+    ra = []
+    for v in json.loads(raw).get("voices") or []:
+        nhan = v.get("labels") or {}
+        ra.append({"id": v.get("voice_id"), "name": v.get("name") or "",
+                   "desc": ", ".join(str(x) for x in nhan.values() if x)[:80]})
+    return ra
+
+
+def tts_tao(engine: str, text: str, out_base: str, voice: str, d: dict | None = None) -> str:
+    """Một đoạn văn → một file âm thanh (đuôi do engine quyết định). Trả đường dẫn."""
+    d = d or {}
+    text = (text or "").strip()
+    if not text:
+        raise RuntimeError("Đoạn văn trống")
+    if engine == "gemini":
+        return tts_gemini(text, voice, out_base + ".wav", str(d.get("style") or ""))
+    if engine == "eleven":
+        return tts_eleven(text, voice, out_base + ".mp3", str(d.get("model") or ""),
+                          str(d.get("lang") or ""))
+    raise RuntimeError("Engine «%s» chưa hỗ trợ" % engine)
+
+
+def ffmpeg_ok() -> bool:
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+
+def noi_audio(paths: list[str], out_path: str, gap_ms: int = 0) -> str:
+    """Nối nhiều file âm thanh (wav/mp3 lẫn lộn) + khoảng lặng giữa các đoạn."""
+    ff = _exe("ffmpeg")
+    lenh = [ff, "-y", "-v", "error"]
+    for p in paths:
+        lenh += ["-i", p]
+    loc, n = [], 0
+    for i in range(len(paths)):
+        loc.append("[%d:a]aresample=44100,aformat=channel_layouts=stereo[a%d]" % (i, n))
+        n += 1
+        if gap_ms > 0 and i < len(paths) - 1:
+            loc.append("aevalsrc=0:c=stereo:s=44100:d=%.3f[a%d]" % (gap_ms / 1000.0, n))
+            n += 1
+    loc.append("".join("[a%d]" % i for i in range(n)) + "concat=n=%d:v=0:a=1[out]" % n)
+    lenh += ["-filter_complex", ";".join(loc), "-map", "[out]"]
+    lenh += ["-c:a", "libmp3lame", "-b:a", "192k"] if out_path.lower().endswith(".mp3") else []
+    subprocess.run(lenh + [out_path], check=True, creationflags=_KHONG_CUA_SO)
+    return out_path
+
+
+def phien_am(path: str, lang: str = "") -> list[dict]:
+    """Âm thanh/video → [{start, end, text}]. faster-whisper nếu có, không thì Gemini."""
+    try:
+        from faster_whisper import WhisperModel  # type: ignore
+    except Exception:
+        WhisperModel = None
+    if WhisperModel is not None:
+        ten = os.environ.get("PB_WHISPER_MODEL") or "large-v3-turbo"
+        log("🎙 Whisper (%s) đang nghe %s…" % (ten, os.path.basename(path)), "INFO", "voice")
+        model = WhisperModel(ten, device="auto", compute_type="auto")
+        segs, _info = model.transcribe(path, language=(lang or None), vad_filter=True)
+        return [{"start": float(s.start), "end": float(s.end), "text": s.text.strip()} for s in segs
+                if s.text.strip()]
+    # Gemini: nén về mp3 mono 32 kbps (1 giờ ≈ 14 MB, dưới trần inline 20 MB)
+    keys = gemini_keys()
+    if not keys:
+        raise RuntimeError("Cần faster-whisper (bấm «AI Models») hoặc Gemini key để phiên âm")
+    tmp = os.path.join(REF_DIR, "pa_%s.mp3" % uuid.uuid4().hex[:8])
+    os.makedirs(REF_DIR, exist_ok=True)
+    subprocess.run([_exe("ffmpeg"), "-y", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "16000",
+                    "-b:a", "32k", tmp], check=True, creationflags=_KHONG_CUA_SO)
+    try:
+        with open(tmp, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    log("🎙 Gemini đang phiên âm %s…" % os.path.basename(path), "INFO", "voice")
+    yeu_cau = ("Phiên âm chính xác lời nói trong file âm thanh, chia theo câu. Trả về DUY NHẤT JSON: "
+               "[{\"start\": giây_bắt_đầu, \"end\": giây_kết_thúc, \"text\": \"câu\"}]")
+    loi = ""
+    for k in keys:
+        ma, raw = _http_json(
+            "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s"
+            % (GEMINI_MODEL, k),
+            {"contents": [{"parts": [{"inlineData": {"mimeType": "audio/mp3", "data": b64}},
+                                     {"text": yeu_cau}]}],
+             "generationConfig": {"responseMimeType": "application/json"}})
+        if ma != 200:
+            loi = "Gemini HTTP %d" % ma
+            continue
+        parts = ((json.loads(raw).get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        chu = _bo_rao("".join(p.get("text") or "" for p in parts))
+        try:
+            ds = json.loads(chu)
+        except ValueError:
+            loi = "Gemini trả phiên âm sai định dạng"
+            continue
+        return [{"start": float(x.get("start") or 0), "end": float(x.get("end") or 0),
+                 "text": str(x.get("text") or "").strip()} for x in ds if str(x.get("text") or "").strip()]
+    raise RuntimeError(loi or "Không phiên âm được")
+
+
+def _giay_srt(t: float) -> str:
+    ms = int(round(max(0.0, t) * 1000))
+    return "%02d:%02d:%02d,%03d" % (ms // 3600000, ms // 60000 % 60, ms // 1000 % 60, ms % 1000)
+
+
+def ghi_srt(segs: list[dict], path: str) -> str:
+    with open(path, "w", encoding="utf-8") as f:
+        for i, s in enumerate(segs, 1):
+            f.write("%d\n%s --> %s\n%s\n\n" % (i, _giay_srt(s["start"]), _giay_srt(s["end"]), s["text"]))
+    return path
+
+
+def doc_srt(path: str) -> list[dict]:
+    """SRT/VTT → [{start, end, text}] (bỏ thẻ <…> của phụ đề tự động YouTube)."""
+    chu = doc_chu(path) if path.lower().endswith((".srt", ".vtt")) else ""
+    ra = []
+    for khoi in re.split(r"\n\s*\n", chu.replace("\r", "")):
+        m = re.search(r"(\d+):(\d\d):(\d\d)[,.](\d{3})\s*-->\s*(\d+):(\d\d):(\d\d)[,.](\d{3})", khoi)
+        if not m:
+            continue
+        g = [int(x) for x in m.groups()]
+        dong = khoi[m.end():].strip().splitlines()
+        text = re.sub(r"<[^>]+>", "", " ".join(x.strip() for x in dong if x.strip())).strip()
+        if text and (not ra or ra[-1]["text"] != text):
+            ra.append({"start": g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000,
+                       "end": g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000, "text": text})
+    return ra
+
+
+def voice_lo(d: dict) -> dict:
+    """Đọc cả lô đoạn văn TUẦN TỰ (khỏi đụng hạn mức) — tiến độ từng đoạn ở v["items"]."""
+    engine = str(d.get("engine") or "gemini")
+    voice = str(d.get("voice") or "")
+    ds = [{"id": x.get("id"), "text": str(x.get("text") or "").strip(), "status": "cho",
+           "path": "", "dur": 0.0, "msg": ""} for x in d.get("items") or [] if str(x.get("text") or "").strip()]
+    if not ds:
+        raise RuntimeError("Chưa có đoạn văn nào")
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), os.path.join("Voice", time.strftime("%Y%m%d_%H%M%S")))
+
+    def viec(v):
+        v["items"] = ds
+        loi = 0
+        for i, it in enumerate(ds, 1):
+            it["status"] = "dang_chay"
+            v["msg"] = "Đoạn %d/%d…" % (i, len(ds))
+            try:
+                p = tts_tao(engine, it["text"], os.path.join(out_dir, "%03d" % i), voice, d)
+                it.update(status="xong", path=p, dur=round(_thoi_luong(p), 2))
+            except Exception as e:
+                loi += 1
+                it.update(status="loi", msg=str(e)[:200])
+                log("❌ Đoạn %d: %s" % (i, e), "LỖI", "voice")
+        v["msg"] = "Xong %d/%d đoạn" % (len(ds) - loi, len(ds))
+        if loi == len(ds):
+            raise RuntimeError(ds[0]["msg"] or "Không đọc được đoạn nào")
+        return ""
+
+    log("🎤 %s · %s · %d đoạn" % (engine, voice, len(ds)), "INFO", "voice")
+    return _chay_nen("voice", "%s · %s" % (engine, voice), out_dir, viec, "voice")
+
+
+def voice_noi(paths, gap_ms: int, out_dir: str) -> dict:
+    ds = [p for p in (paths or []) if os.path.isfile(str(p))]
+    if not ds:
+        raise RuntimeError("Chưa có đoạn nào đã đọc xong")
+    out_dir = out_dir or os.path.dirname(ds[0])
+    ra = os.path.join(out_dir, "noi_%s.mp3" % time.strftime("%H%M%S"))
+    return _chay_nen("voice-noi", ds[0], out_dir,
+                     lambda v: noi_audio(ds, ra, max(0, int(gap_ms or 0))), "voice")
+
+
+# ───────────────────────── Ghép Video ─────────────────────────
+#
+# Nối clip trong một thư mục + nhạc nền + lặp video. Mỗi clip được dựng lại
+# về cùng khung/fps/âm thanh trước khi nối (clip từ Veo/Flow/tải về khác
+# nhau codec, có clip không tiếng) — nối thẳng bằng `-c copy` sẽ vỡ hình.
+
+def _probe(path: str) -> dict:
+    r = subprocess.run([_exe("ffprobe"), "-v", "error", "-print_format", "json",
+                        "-show_format", "-show_streams", path],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       creationflags=_KHONG_CUA_SO)
+    try:
+        data = json.loads(r.stdout or "{}")
+    except ValueError:
+        data = {}
+    v = next((s for s in data.get("streams") or [] if s.get("codec_type") == "video"), {})
+    return {"dur": float((data.get("format") or {}).get("duration") or 0),
+            "w": int(v.get("width") or 0), "h": int(v.get("height") or 0),
+            "audio": any(s.get("codec_type") == "audio" for s in data.get("streams") or [])}
+
+
+def ghep_ds(folder: str) -> list[dict]:
+    if not os.path.isdir(folder):
+        raise RuntimeError("Không thấy thư mục: %s" % folder)
+    ra = []
+    for p in _ds_file([folder], DUOI_VIDEO):
+        info = _probe(p)
+        ra.append({"path": p, "name": os.path.basename(p), "dur": info["dur"],
+                   "w": info["w"], "h": info["h"], "size": os.path.getsize(p)})
+    return ra
+
+
+def ghep_video(paths, d: dict) -> dict:
+    ds = [p for p in (paths or []) if os.path.isfile(str(p))]
+    if not ds:
+        raise RuntimeError("Chưa chọn video")
+    nhac = str(d.get("music") or "")
+    if nhac and not os.path.isfile(nhac):
+        raise RuntimeError("Không thấy file nhạc: %s" % nhac)
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), "Ghep_video")
+    ra = os.path.join(out_dir, "ghep_%s.mp4" % time.strftime("%Y%m%d_%H%M%S"))
+
+    def viec(v):
+        ff = _exe("ffmpeg")
+        tmp = os.path.join(REF_DIR, "ghep_" + v["id"])
+        os.makedirs(tmp, exist_ok=True)
+        try:
+            dau = _probe(ds[0])
+            w, h = (dau["w"] or 1280) // 2 * 2, (dau["h"] or 720) // 2 * 2
+            ds_tam = []
+            for i, p in enumerate(ds, 1):
+                v["msg"] = "Chuẩn hoá %d/%d · %s" % (i, len(ds), os.path.basename(p))
+                info = _probe(p)
+                tam = os.path.join(tmp, "%04d.mp4" % i)
+                lenh = [ff, "-y", "-v", "error", "-i", p]
+                if not info["audio"]:
+                    lenh += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+                lenh += ["-vf", "scale=%d:%d:force_original_aspect_ratio=decrease,"
+                                "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30" % (w, h, w, h),
+                         "-map", "0:v:0", "-map", "0:a:0" if info["audio"] else "1:a:0",
+                         "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                         "-c:a", "aac", "-ar", "44100", "-ac", "2", "-shortest", tam]
+                subprocess.run(lenh, check=True, creationflags=_KHONG_CUA_SO)
+                ds_tam.append(tam)
+            ds_txt = os.path.join(tmp, "list.txt")
+            with open(ds_txt, "w", encoding="utf-8") as f:
+                f.writelines("file '%s'\n" % x.replace("\\", "/").replace("'", "'\\''") for x in ds_tam)
+            noi = os.path.join(tmp, "noi.mp4")
+            v["msg"] = "Nối %d clip…" % len(ds)
+            subprocess.run([ff, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", ds_txt,
+                            "-c", "copy", noi], check=True, creationflags=_KHONG_CUA_SO)
+
+            # Lặp video tới đủ thời lượng mục tiêu
+            if d.get("loopVideo") and float(d.get("targetSec") or 0) > 0:
+                v["msg"] = "Lặp video…"
+                lap = os.path.join(tmp, "lap.mp4")
+                subprocess.run([ff, "-y", "-v", "error", "-stream_loop", "-1", "-i", noi,
+                                "-t", "%.3f" % float(d["targetSec"]), "-c", "copy", lap],
+                               check=True, creationflags=_KHONG_CUA_SO)
+                noi = lap
+
+            if not nhac:
+                shutil.move(noi, ra)
+                return ra
+            v["msg"] = "Trộn nhạc nền…"
+            vol = max(0.0, min(2.0, float(d.get("vol") if d.get("vol") is not None else 100) / 100.0))
+            lenh = [ff, "-y", "-v", "error", "-i", noi]
+            if d.get("loopAudio", True):
+                lenh += ["-stream_loop", "-1"]
+            lenh += ["-i", nhac]
+            if d.get("muteOrig", True):
+                loc = "[1:a]volume=%.2f[a]" % vol
+            else:
+                loc = ("[1:a]volume=%.2f[m];[0:a][m]amix=inputs=2:duration=first:"
+                       "dropout_transition=0:normalize=0[a]" % vol)
+            # Nhạc không lặp mà ngắn hơn video → hết nhạc thì im, video vẫn chạy đủ
+            loc = loc.replace("[1:a]volume", "[1:a]apad,volume") if not d.get("loopAudio", True) else loc
+            lenh += ["-filter_complex", loc, "-map", "0:v", "-map", "[a]", "-c:v", "copy",
+                     "-c:a", "aac", "-shortest", ra]
+            subprocess.run(lenh, check=True, creationflags=_KHONG_CUA_SO)
+            return ra
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    log("▦ Ghép %d clip%s" % (len(ds), " + nhạc" if nhac else ""), "INFO", "ghep")
+    return _chay_nen("ghep", ds[0], out_dir, viec, "ghep")
+
+
 # ───────────────────────── tiện ích ─────────────────────────
 
 def chon_thu_muc(goc: str = "") -> str:
@@ -1630,6 +2057,8 @@ class XuLy(BaseHTTPRequestHandler):
                 cho_phep = {j.get("out_path") for j in HANG.jobs.values()}
                 cho_phep.update(j.get("out_path") for j in MUSE.jobs.values())
                 cho_phep.update(v.get("out_path") for v in VIEC.viec.values())
+                for v in list(VIEC.viec.values()):
+                    cho_phep.update(x.get("path") for x in v.get("items") or [])
                 with FLOW.lock:
                     for v in FLOW.items.values():
                         cho_phep.update(v.get("files") or [])
@@ -1640,6 +2069,7 @@ class XuLy(BaseHTTPRequestHandler):
                 with open(p, "rb") as f:
                     b = f.read()
                 kieu = {".mp4": "video/mp4", ".png": "image/png", ".webp": "image/webp",
+                        ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
                         ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(
                             os.path.splitext(p)[1].lower(), "application/octet-stream")
                 self.send_response(200)
@@ -1770,6 +2200,23 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, **mini_dich(d)})
             if u.path == "/api/mini/script-prompt":
                 return self._json(200, {"ok": True, **mini_kich_ban_prompt(d)})
+            if u.path == "/api/ghep/list":
+                return self._json(200, {"ok": True, "items": ghep_ds(str(d.get("folder") or ""))})
+            if u.path == "/api/ghep/merge":
+                return self._json(200, {"ok": True, **ghep_video(d.get("paths"), d)})
+            if u.path == "/api/voice/tts":
+                return self._json(200, {"ok": True, **voice_lo(d)})
+            if u.path == "/api/voice/join":
+                return self._json(200, {"ok": True, **voice_noi(d.get("paths"), int(d.get("gap_ms") or 0),
+                                                                str(d.get("out_dir") or ""))})
+            if u.path == "/api/voice/eleven-voices":
+                return self._json(200, {"ok": True, "voices": eleven_ds_giong()})
+            if u.path == "/api/config/bridge":
+                cfg = cau_hinh(d.get("set") if isinstance(d.get("set"), dict) else None)
+                che = {k: ((str(v)[:4] + "…") if "key" in k and v else v) for k, v in cfg.items()}
+                return self._json(200, {"ok": True, "cfg": che,
+                                        "gemini": len(gemini_keys_an_toan()),
+                                        "eleven": len(eleven_keys())})
             if u.path == "/api/pick-folder":
                 return self._json(200, {"ok": True, "path": chon_thu_muc(d.get("start") or "")})
             if u.path == "/api/open-folder":

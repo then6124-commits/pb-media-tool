@@ -510,3 +510,19 @@
     grid-template-columns: 1fr;
   }
 }
+
+.gv-result {
+  margin: 0 16px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(15, 23, 42, 0.6);
+}
+.gv-preview {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  margin-top: 8px;
+  border-radius: 10px;
+  background: #000;
+}

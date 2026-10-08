@@ -1,5 +1,6 @@
 import DrawEngineModal, { DEFAULT_DRAW_CONFIG, type DrawEngineConfig } from './DrawEngineModal'
 import { useEffect, useState } from 'react'
+import { api, baseName, type BridgeJob, downloadText, errText, useJobs } from './bridge'
 import './mini.css'
 
 type AppId =
@@ -234,72 +235,7 @@ const TRANSLATE_LANGS = [
   'Bahasa Melayu',
 ]
 
-async function api<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
-  const r = await fetch(
-    path,
-    body === undefined
-      ? undefined
-      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
-  )
-  const j = (await r.json().catch(() => ({}))) as T & { ok?: boolean; error?: string }
-  if (!r.ok || j.ok === false) throw new Error(j.error || `HTTP ${r.status}`)
-  return j
-}
-
-function errText(e: unknown) {
-  const m = e instanceof Error ? e.message : String(e)
-  return /Failed to fetch|NetworkError/i.test(m) ? 'Cầu nối (pb_bridge.py) chưa chạy' : m
-}
-
-function baseName(p: string) {
-  return p.split(/[\\/]/).pop() || p
-}
-
-function downloadText(name: string, text: string) {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
-type MiniJob = {
-  id: string
-  loai: string
-  nguon: string
-  status: 'dang_chay' | 'xong' | 'loi'
-  msg: string
-  out_path: string
-  out_dir?: string
-}
-
-/** Việc nền của MiniApp — hỏi /api/util/jobs 1.5s một lần, lọc theo `loai`. */
-function useJobs(loai: string[]) {
-  const [jobs, setJobs] = useState<MiniJob[]>([])
-  const key = loai.join(',')
-  useEffect(() => {
-    let dead = false
-    const want = key.split(',')
-    async function tick() {
-      try {
-        const r = await api<{ jobs: MiniJob[] }>('/api/util/jobs')
-        if (!dead) setJobs(r.jobs.filter((j) => want.includes(j.loai)))
-      } catch {
-        /* cầu nối tắt */
-      }
-    }
-    void tick()
-    const t = window.setInterval(tick, 1500)
-    return () => {
-      dead = true
-      window.clearInterval(t)
-    }
-  }, [key])
-  return jobs
-}
-
-function JobList({ jobs }: { jobs: MiniJob[] }) {
+function JobList({ jobs }: { jobs: BridgeJob[] }) {
   if (!jobs.length) return null
   return (
     <div className="ma-jobs">
