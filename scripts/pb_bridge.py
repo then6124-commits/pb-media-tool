@@ -465,6 +465,18 @@ class HangVids:
         self._bom()
         return ids
 
+    def sua_prompt(self, jid: str, prompt: str) -> None:
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            raise RuntimeError("Prompt trống")
+        with self.lock:
+            j = self.jobs.get(jid)
+            if not j:
+                raise RuntimeError("Không thấy dòng này (cầu nối đã khởi động lại?)")
+            if j["status"] == "dang_chay":
+                raise RuntimeError("Dòng đang chạy — chờ xong hoặc dừng rồi sửa")
+            j["prompt"] = prompt
+
     def chay_lai(self, ids: list[str]) -> int:
         n = 0
         with self.lock:
@@ -3960,6 +3972,9 @@ class XuLy(BaseHTTPRequestHandler):
                     len(ids), d.get("aspect"), d.get("resolution"), d.get("duration"),
                     d.get("parallel")), "INFO", "vids")
                 return self._json(200, {"ok": True, "ids": ids})
+            if u.path == "/api/vids/edit":
+                HANG.sua_prompt(str(d.get("id") or ""), str(d.get("prompt") or ""))
+                return self._json(200, {"ok": True})
             if u.path == "/api/vids/retry":
                 return self._json(200, {"ok": True, "n": HANG.chay_lai(list(d.get("ids") or []))})
             if u.path == "/api/vids/stop":

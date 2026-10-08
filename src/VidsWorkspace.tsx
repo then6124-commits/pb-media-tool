@@ -184,6 +184,8 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   const [search, setSearch] = useState('')
   const [collapsed, setCollapsed] = useState(() => loadJson(LS_COLLAPSED, false))
   const [showCfg, setShowCfg] = useState(() => loadJson('pb.vids.showcfg', false))
+  /** Hộp «Sửa prompt» của một dòng trong hàng đợi. */
+  const [editRow, setEditRow] = useState<{ id: string; status: RowStatus; text: string } | null>(null)
   /** Cỡ video kết quả: dạng danh sách = bề ngang ảnh (px), dạng lưới = số cột. */
   const [thumbW, setThumbW] = useState(() => loadJson('pb.vids.thumbw', 44))
   const [gridCols, setGridCols] = useState(() => loadJson('pb.vids.gridcols', 4))
@@ -562,6 +564,39 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+
+  /** Lưu prompt đã sửa; again=true → chạy lại (dòng lỗi/chờ) hoặc tạo video mới (dòng đã xong). */
+  const saveEdit = async (again: boolean) => {
+    if (!editRow) return
+    const text = editRow.text.trim()
+    if (!text) {
+      flash('Prompt trống')
+      return
+    }
+    try {
+      if (again && editRow.status === 'xong') {
+        await api('/api/vids/start', {
+          prompts: [text],
+          aspect,
+          resolution,
+          duration,
+          parallel,
+          out_dir: savePath,
+          doc_id: docId,
+          project: active?.name || 'du_an',
+          refs: refs.map((r) => ({ tag: r.tag, path: r.path })),
+        })
+        flash('Đã tạo video mới với prompt đã sửa (video cũ giữ nguyên)')
+      } else {
+        await api('/api/vids/edit', { id: editRow.id, prompt: text })
+        if (again) await api('/api/vids/retry', { ids: [editRow.id] })
+        flash(again ? 'Đã lưu và chạy lại' : 'Đã lưu prompt')
+      }
+      setEditRow(null)
+    } catch (e) {
+      flash(`Không lưu được: ${(e as Error).message}`)
+    }
+  }
 
   const retryIds = async (ids: string[], label: string) => {
     if (!ids.length) {
@@ -1274,9 +1309,6 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                     <td className="vids-ops">
                       {r.status === 'xong' && r.outPath && (
                         <span className="st-ops-done">
-                          <a className="st-op" title="Xem video" href={fileUrl(r.outPath)} target="_blank" rel="noreferrer">
-                            <Ico n="play" size={16} />
-                          </a>
                           <button type="button" title="Mở thư mục chứa video" onClick={() => openFileFolder(r.outPath!)}>
                             <Ico n="folderopen" size={16} />
                           </button>
@@ -1311,12 +1343,8 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                       </button>
                       <button
                         type="button"
-                        title="Sửa"
-                        onClick={() => {
-                          setPromptText(r.prompt)
-                          setCollapsed(false)
-                          flash('Đã đưa prompt lên khung nhập')
-                        }}
+                        title="Sửa prompt"
+                        onClick={() => setEditRow({ id: r.id, status: r.status, text: r.prompt })}
                       >
                         <Ico n="pencil" size={16} />
                       </button>
@@ -1387,6 +1415,46 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
             ))}
           </div>
         </aside>
+      )}
+
+      {editRow && (
+        <div className="vids-modal-backdrop" onClick={() => setEditRow(null)}>
+          <div className="vids-modal st-edit-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="vids-modal-title">
+              <Ico n="pencil" size={16} /> Sửa prompt
+            </div>
+            <textarea
+              className="vids-textarea st-edit-text"
+              value={editRow.text}
+              onChange={(e) => setEditRow({ ...editRow, text: e.target.value })}
+              autoFocus
+            />
+            <div className="vids-modal-foot">
+              <button
+                type="button"
+                className="vids-ghost"
+                onClick={() => {
+                  navigator.clipboard?.writeText(editRow.text).catch(() => {})
+                  flash('Đã chép prompt')
+                }}
+              >
+                <Ico n="copy" size={13} /> Chép
+              </button>
+              <span className="grow" />
+              <button type="button" className="vids-ghost" onClick={() => setEditRow(null)}>
+                Huỷ
+              </button>
+              {editRow.status !== 'xong' && (
+                <button type="button" className="vids-ghost" onClick={() => void saveEdit(false)}>
+                  Lưu
+                </button>
+              )}
+              <button type="button" className="vids-run" onClick={() => void saveEdit(true)}>
+                {editRow.status === 'xong' ? 'Tạo video mới với prompt này' : 'Lưu & chạy lại'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showCreate && (
