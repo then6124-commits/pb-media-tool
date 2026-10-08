@@ -379,12 +379,8 @@ export default function MuseWorkspace() {
   }
 
   const openFolder = (p?: string) => {
-    const dir = p ? p.replace(/[\\/][^\\/]*$/, '') : savePath
-    if (!dir) {
-      flash('Chưa có thư mục — mặc định Videos\\PB_MEDIA\\Muse\\<dự án>')
-      return
-    }
-    api('/api/open-folder', { path: dir }).catch(() => flash('Không mở được thư mục'))
+    const body = p ? { path: p } : { path: savePath, tab: 'Muse', project: active?.name || '' }
+    api('/api/open-folder', body).catch((e) => flash(`Không mở được thư mục: ${(e as Error).message}`))
   }
 
   const deleteRows = (ids: string[] | null) => {

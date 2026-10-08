@@ -3981,15 +3981,52 @@ class XuLy(BaseHTTPRequestHandler):
             if u.path == "/api/pick-folder":
                 return self._json(200, {"ok": True, "path": chon_thu_muc(d.get("start") or "")})
             if u.path == "/api/open-folder":
-                p = str(d.get("path") or "")
-                if os.path.isdir(p):
-                    os.startfile(p)  # noqa — chỉ Windows
-                return self._json(200, {"ok": True})
+                return self._json(200, {"ok": True, "path": mo_thu_muc(
+                    str(d.get("path") or ""), str(d.get("tab") or ""), str(d.get("project") or ""))})
             return self._json(404, {"ok": False, "error": "không có " + u.path})
         except Exception as e:
             log("❌ %s: %s" % (u.path, e), "LỖI")
             traceback.print_exc()
             return self._json(500, {"ok": False, "error": str(e)})
+
+
+def mo_thu_muc(p: str, tab: str = "", du_an: str = "") -> str:
+    """Mở thư mục trong Explorer.
+
+    - p trống + tab (Vids/Muse) → thư mục mặc định Videos\\PB_MEDIA\\<tab>\\<dự án> (tạo nếu chưa có).
+    - p là file → mở thư mục chứa nó và chọn sẵn file.
+    - p chưa tồn tại → thư mục lưu thì tạo luôn; không thì mở thư mục cha gần nhất còn có.
+    Gọi explorer.exe thay vì os.startfile: chạy được từ tiến trình nền không cửa sổ
+    và nhận cả đường dẫn dùng «/».
+    """
+    p = (p or "").strip().strip('"')
+    if not p and tab:
+        p = os.path.join(OUT_MAC_DINH, tab, re.sub(r'[\\/:*?"<>|]+', "_", du_an or "du_an"))
+        os.makedirs(p, exist_ok=True)
+    if not p:
+        raise RuntimeError("Chưa có thư mục để mở")
+    p = os.path.normpath(os.path.expandvars(os.path.expanduser(p)))
+    chon = ""
+    if os.path.isfile(p):
+        chon, p = p, os.path.dirname(p)
+    elif not os.path.isdir(p):
+        if tab:
+            os.makedirs(p, exist_ok=True)
+        else:
+            cha = p
+            while cha and not os.path.isdir(cha) and os.path.dirname(cha) != cha:
+                cha = os.path.dirname(cha)
+            if not os.path.isdir(cha):
+                raise RuntimeError("Không thấy thư mục: %s" % p)
+            p = cha
+    if os.name == "nt":
+        lenh = ["explorer.exe", "/select,", chon] if chon else ["explorer.exe", p]
+        subprocess.Popen(lenh, close_fds=True)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", chon] if chon else ["open", p])
+    else:
+        subprocess.Popen(["xdg-open", p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return p
 
 
 def main():

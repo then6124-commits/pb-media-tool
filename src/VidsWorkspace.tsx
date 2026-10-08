@@ -452,7 +452,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
 
   /** Mở thư mục chứa một file (nút 📂 trên từng dòng). */
   const openFileFolder = (path: string) => {
-    api('/api/open-folder', { path: path.replace(/[\\/][^\\/]*$/, '') }).catch(() => flash('Không mở được thư mục'))
+    api('/api/open-folder', { path }).catch((e) => flash(`Không mở được thư mục: ${(e as Error).message}`))
   }
 
   /** Gửi video đã xong sang tab «Kéo dài». */
@@ -491,11 +491,9 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   }
 
   const openFolder = () => {
-    if (!savePath) {
-      flash('Chưa chọn thư mục — video vào Videos\\PB_MEDIA\\Vids\\<dự án>')
-      return
-    }
-    api('/api/open-folder', { path: savePath }).catch(() => flash('Không mở được thư mục'))
+    api('/api/open-folder', { path: savePath, tab: 'Vids', project: active?.name || '' }).catch((e) =>
+      flash(`Không mở được thư mục: ${(e as Error).message}`),
+    )
   }
 
   const loadTxt = (file: File) => {
