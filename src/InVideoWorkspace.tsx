@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { api, baseName, errText, fileUrl, openFolder, pickFiles, useJobs } from './bridge'
 
 type View = 'manager' | 'create'
 type InputKind = 'idea' | 'script' | 'audio' | 'link' | 'dub'
@@ -6,6 +7,7 @@ type MediaKind = 'stock_img' | 'stock_vid' | 'ai_motion' | 'gameplay'
 type AudioSrc = 'original' | 'tts'
 type Ratio = 'doc' | 'ngang' | 'vuong'
 type TransitionId =
+  | string
   | 'none'
   | 'fade'
   | 'fade_black'
@@ -19,18 +21,16 @@ type TransitionId =
   | 'wind'
   | 'crosswarp'
 
-type ModelItem = {
-  id: string
-  name: string
-  desc: string
-  size: string
-  icon: string
-  tone: 'purple' | 'orange' | 'blue'
-  status: 'pending' | 'downloading' | 'done'
-  progress: number
+type SetupState = {
+  ffmpeg: boolean
+  ytdlp: boolean
+  deno: boolean
+  whisper: boolean
+  gemini: number
+  pexels: boolean
 }
 
-type BgThumb = { id: number; label: string; hue: number }
+type InvVideo = { path: string; name: string; t: number; size: number }
 
 const LS_SETUP = 'pb.invideo.setupDone'
 const LS_WAVE = 'pb.invideo.wave'
@@ -41,8 +41,7 @@ const LS_TRANS = 'pb.invideo.trans'
 const LS_VOICE = 'pb.invideo.voice'
 const LS_AUDIO_SRC = 'pb.invideo.audioSrc'
 const LS_LANG = 'pb.invideo.lang'
-const LS_BG_CAT = 'pb.invideo.bgCat'
-const LS_BG_ID = 'pb.invideo.bgId'
+const LS_BG = 'pb.invideo.bg'
 
 const INPUTS: { id: InputKind; label: string; icon: string; hint?: string }[] = [
   { id: 'idea', label: 'Idea → Video', icon: '💡' },
@@ -120,19 +119,6 @@ const EXTRA_TRANS: { id: string; label: string; icon: string }[] = [
   { id: 'radial', label: 'Radial', icon: '◎' },
 ]
 
-const BG_CATS = [
-  'Viral Video',
-  'Gameplay',
-  'UGC',
-  'Temple Run',
-  'Subway S.',
-  'Trackmania',
-  'Fortnite',
-  'Space',
-  'Abstract',
-  'Satisfying',
-]
-
 const VOICES = [
   'Achernar',
   'Aoede',
@@ -165,62 +151,18 @@ function writeLS(key: string, val: unknown) {
   }
 }
 
-function makeThumbs(cat: string): BgThumb[] {
-  const base = cat.length * 17
-  return Array.from({ length: 5 }, (_, i) => ({
-    id: i + 1,
-    label: `${cat} ${i + 1}`,
-    hue: (base + i * 41) % 360,
-  }))
-}
-
 function ratioMeta(r: Ratio) {
   if (r === 'doc') return { label: '9:16', wh: '1080 × 1920', cls: 'portrait' }
   if (r === 'ngang') return { label: '16:9', wh: '1920 × 1080', cls: 'landscape' }
   return { label: '1:1', wh: '1080 × 1080', cls: 'square' }
 }
 
-function defaultModels(): ModelItem[] {
-  return [
-    {
-      id: 'whisper',
-      name: 'Whisper Large V3 Turbo',
-      desc: 'Speech-to-text model • ~874MB',
-      size: '~874MB',
-      icon: '⬡',
-      tone: 'purple',
-      status: 'pending',
-      progress: 0,
-    },
-    {
-      id: 'accel',
-      name: 'Whisper Accelerator',
-      desc: 'GPU/BLAS engine • auto-detect',
-      size: 'auto',
-      icon: '⚡',
-      tone: 'orange',
-      status: 'pending',
-      progress: 0,
-    },
-    {
-      id: 'deno',
-      name: 'YouTube Runtime (Deno)',
-      desc: 'Giải mã JS challenge • ~47MB',
-      size: '~47MB',
-      icon: '🌐',
-      tone: 'blue',
-      status: 'pending',
-      progress: 0,
-    },
-  ]
-}
-
 export default function InVideoWorkspace() {
   const [view, setView] = useState<View>('manager')
   const [showSetup, setShowSetup] = useState(false)
   const [setupDone, setSetupDone] = useState(() => readLS(LS_SETUP, false))
-  const [models, setModels] = useState<ModelItem[]>(defaultModels)
-  const [downloading, setDownloading] = useState(false)
+  const [setup, setSetup] = useState<SetupState | null>(null)
+  const [pexelsKey, setPexelsKey] = useState('')
 
   const [input, setInput] = useState<InputKind>(() => readLS(LS_INPUT, 'link'))
   const [media, setMedia] = useState<MediaKind>(() => readLS(LS_MEDIA, 'stock_img'))
@@ -235,32 +177,69 @@ export default function InVideoWorkspace() {
   const [voice, setVoice] = useState(() => readLS(LS_VOICE, 'Achernar'))
   const [ideaText, setIdeaText] = useState('')
   const [scriptText, setScriptText] = useState('')
-  const [bgCat, setBgCat] = useState(() => readLS(LS_BG_CAT, 'Viral Video'))
-  const [bgId, setBgId] = useState(() => readLS(LS_BG_ID, 1))
+  const [bg, setBg] = useState(() => readLS(LS_BG, ''))
   const [toast, setToast] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
-  const [videos, setVideos] = useState<{ id: number; title: string; when: string }[]>([])
+  const [videos, setVideos] = useState<InvVideo[]>([])
+  const [playing, setPlaying] = useState<string | null>(null)
   const [logOpen, setLogOpen] = useState(true)
-  const [logs, setLogs] = useState<
-    { id: number; time: string; level: string; msg: string }[]
-  >(() => [
-    {
-      id: 1,
-      time: new Date().toLocaleTimeString('vi-VN', { hour12: false }),
-      level: 'INFO',
-      msg: 'FFmpeg detected — sẵn sàng ghép video (mock).',
-    },
-  ])
+  const [logs, setLogs] = useState<{ id: number; time: string; level: string; msg: string }[]>([])
+  const logSince = useRef(0)
+  const jobs = useJobs(['invideo', 'invideo-setup'])
+  const running = jobs.filter((j) => j.loai === 'invideo' && j.status === 'dang_chay')
+  const setupJob = jobs.find((j) => j.loai === 'invideo-setup')
 
-  const fileRef = useRef<HTMLInputElement>(null)
-  const dlTimer = useRef<number | null>(null)
-
-  const thumbs = useMemo(() => makeThumbs(bgCat), [bgCat])
   const rMeta = ratioMeta(ratio)
-  const remaining = models.filter((m) => m.status !== 'done').length
+  const doneJobs = jobs.filter((j) => j.loai === 'invideo' && j.status !== 'dang_chay').length
 
-  useEffect(() => () => {
-    if (dlTimer.current) window.clearInterval(dlTimer.current)
+  async function loadVideos() {
+    try {
+      const r = await api<{ items: InvVideo[] }>('/api/invideo/list', {})
+      setVideos(r.items)
+    } catch {
+      /* cầu nối tắt */
+    }
+  }
+
+  async function loadSetup() {
+    try {
+      setSetup(await api<SetupState>('/api/invideo/setup', {}))
+    } catch (e) {
+      flash(errText(e))
+    }
+  }
+
+  // Danh sách video có sẵn + mỗi lần có việc vừa xong thì tải lại
+  useEffect(() => {
+    void loadVideos()
+  }, [doneJobs])
+
+  useEffect(() => {
+    if (setupJob?.status === 'xong') void loadSetup()
+  }, [setupJob?.status])
+
+  // Nhật ký: chỉ dòng tag «invideo» của cầu nối
+  useEffect(() => {
+    let dead = false
+    async function tick() {
+      try {
+        const r = await api<{ logs: { id: number; time: string; level: string; tag: string; msg: string }[] }>(
+          `/api/logs?since=${logSince.current}`,
+        )
+        if (dead || !r.logs.length) return
+        logSince.current = r.logs[r.logs.length - 1].id
+        const mine = r.logs.filter((x) => x.tag === 'invideo' || x.tag === 'voice')
+        if (mine.length) setLogs((prev) => [...prev, ...mine].slice(-200))
+      } catch {
+        /* cầu nối tắt */
+      }
+    }
+    void tick()
+    const t = window.setInterval(tick, 2000)
+    return () => {
+      dead = true
+      window.clearInterval(t)
+    }
   }, [])
 
   useEffect(() => writeLS(LS_INPUT, input), [input])
@@ -271,18 +250,12 @@ export default function InVideoWorkspace() {
   useEffect(() => writeLS(LS_LANG, lang), [lang])
   useEffect(() => writeLS(LS_AUDIO_SRC, audioSrc), [audioSrc])
   useEffect(() => writeLS(LS_VOICE, voice), [voice])
-  useEffect(() => writeLS(LS_BG_CAT, bgCat), [bgCat])
-  useEffect(() => writeLS(LS_BG_ID, bgId), [bgId])
+  useEffect(() => writeLS(LS_BG, bg), [bg])
 
   function pushLog(level: string, msg: string) {
     setLogs((prev) => [
-      ...prev.slice(-80),
-      {
-        id: Date.now(),
-        time: new Date().toLocaleTimeString('vi-VN', { hour12: false }),
-        level,
-        msg,
-      },
+      ...prev.slice(-200),
+      { id: Date.now(), time: new Date().toLocaleTimeString('vi-VN', { hour12: false }), level, msg },
     ])
   }
 
@@ -293,10 +266,8 @@ export default function InVideoWorkspace() {
 
   function openCreate() {
     setView('create')
-    if (!setupDone) {
-      setShowSetup(true)
-      pushLog('INFO', 'Mở AI Models Setup — tải Whisper / Deno (mock).')
-    }
+    if (!setupDone) setShowSetup(true)
+    void loadSetup()
   }
 
   function closeSetup(markDone = false) {
@@ -307,103 +278,77 @@ export default function InVideoWorkspace() {
     }
   }
 
-  function startDownloadAll() {
-    if (downloading) return
-    setDownloading(true)
-    pushLog('INFO', 'Bắt đầu tải models (mock)…')
-    let idx = 0
-    const ids = models.map((m) => m.id)
-    setModels((prev) =>
-      prev.map((m, i) =>
-        i === 0 ? { ...m, status: 'downloading', progress: 8 } : m,
-      ),
-    )
-    if (dlTimer.current) window.clearInterval(dlTimer.current)
-    dlTimer.current = window.setInterval(() => {
-      setModels((prev) => {
-        const next = prev.map((m) => ({ ...m }))
-        const cur = next.find((m) => m.id === ids[idx])
-        if (!cur) return prev
-        if (cur.status === 'pending') cur.status = 'downloading'
-        cur.progress = Math.min(100, cur.progress + 12 + Math.floor(Math.random() * 10))
-        if (cur.progress >= 100) {
-          cur.progress = 100
-          cur.status = 'done'
-          idx += 1
-          if (idx < ids.length) {
-            const n = next.find((m) => m.id === ids[idx])
-            if (n) {
-              n.status = 'downloading'
-              n.progress = 5
-            }
-          }
-        }
-        if (idx >= ids.length && next.every((m) => m.status === 'done')) {
-          if (dlTimer.current) window.clearInterval(dlTimer.current)
-          dlTimer.current = null
-          setDownloading(false)
-          setSetupDone(true)
-          writeLS(LS_SETUP, true)
-          pushLog('INFO', 'Đã tải xong 3 models (mock).')
-          flash('Models sẵn sàng (mock)')
-          window.setTimeout(() => setShowSetup(false), 600)
-        }
-        return next
-      })
-    }, 280)
+  async function savePexels() {
+    try {
+      await api('/api/config/bridge', { set: { pexels_key: pexelsKey.trim() } })
+      setPexelsKey('')
+      flash('Đã lưu Pexels key')
+      void loadSetup()
+    } catch (e) {
+      flash(errText(e))
+    }
   }
 
-  function onPickAudio(file?: File | null) {
-    if (!file) return
-    setAudioFile(file.name)
-    pushLog('INFO', `Đã chọn audio: ${file.name}`)
-    flash(`Đã chọn: ${file.name}`)
+  async function installWhisper() {
+    try {
+      await api('/api/invideo/setup', { install: 'whisper' })
+      pushLog('INFO', 'Đang cài faster-whisper + tải model…')
+    } catch (e) {
+      flash(errText(e))
+    }
   }
 
-  function handleCreateVideo() {
+  async function chooseAudio() {
+    try {
+      const [p] = await pickFiles('audio', false)
+      if (p) {
+        setAudioFile(p)
+        flash(`Đã chọn: ${baseName(p)}`)
+      }
+    } catch (e) {
+      flash(errText(e))
+    }
+  }
+
+  async function chooseVideo(set: (p: string) => void) {
+    try {
+      const [p] = await pickFiles('video', false)
+      if (p) set(p)
+    } catch (e) {
+      flash(errText(e))
+    }
+  }
+
+  async function handleCreateVideo() {
     if (creating) return
-    if (input === 'audio' && !audioFile) {
-      flash('Hãy chọn file âm thanh trước')
-      return
-    }
-    if (input === 'link' && !link.trim()) {
-      flash('Hãy dán link video trước')
-      return
-    }
-    if (input === 'idea' && !ideaText.trim()) {
-      flash('Hãy nhập ý tưởng trước')
-      return
-    }
-    if (input === 'script' && !scriptText.trim()) {
-      flash('Hãy nhập kịch bản trước')
-      return
-    }
+    if (input === 'audio' && !audioFile) return flash('Hãy chọn file âm thanh trước')
+    if ((input === 'link' || input === 'dub') && !link.trim()) return flash('Hãy dán link / chọn file trước')
+    if (input === 'idea' && !ideaText.trim()) return flash('Hãy nhập ý tưởng trước')
+    if (input === 'script' && !scriptText.trim()) return flash('Hãy nhập kịch bản trước')
+    if (media === 'gameplay' && input !== 'dub' && !bg) return flash('Hãy chọn video nền trước')
     setCreating(true)
-    pushLog('INFO', `Đang tạo video (${INPUTS.find((i) => i.id === input)?.label})…`)
-    window.setTimeout(() => {
-      const title =
-        input === 'link'
-          ? `Link · ${link.slice(0, 42) || 'video'}`
-          : input === 'audio'
-            ? `Audio · ${audioFile}`
-            : input === 'idea'
-              ? `Idea · ${ideaText.slice(0, 36)}`
-              : input === 'script'
-                ? `Script · ${scriptText.slice(0, 36)}`
-                : 'Dịch & Lồng tiếng'
-      setVideos((v) => [
-        {
-          id: Date.now(),
-          title,
-          when: new Date().toLocaleString('vi-VN'),
-        },
-        ...v,
-      ])
-      setCreating(false)
-      pushLog('INFO', 'Tạo video xong (mock) — đã thêm vào Video Manager.')
-      flash('Đã tạo video (mock)')
+    try {
+      await api('/api/invideo/create', {
+        input,
+        text: input === 'idea' ? ideaText : scriptText,
+        audio: audioFile,
+        link: link.trim(),
+        lang,
+        audioSrc,
+        voice,
+        media,
+        bg,
+        trans,
+        ratio,
+        wave,
+      })
+      flash('Đã bắt đầu tạo video — theo dõi ở Video Manager')
       setView('manager')
-    }, 1400)
+    } catch (e) {
+      flash(errText(e))
+    } finally {
+      setCreating(false)
+    }
   }
 
   return (
@@ -424,6 +369,17 @@ export default function InVideoWorkspace() {
             </button>
           </header>
 
+          {jobs
+            .filter((j) => j.loai === 'invideo')
+            .slice(0, 5)
+            .map((j) => (
+              <div key={j.id} className={`inv-job ${j.status}`}>
+                <span>{j.status === 'dang_chay' ? '⏳' : j.status === 'xong' ? '✅' : '❌'}</span>
+                <strong>{j.nguon}</strong>
+                <span className="muted">{j.msg || 'Đang chạy…'}</span>
+              </div>
+            ))}
+
           {videos.length === 0 ? (
             <div className="inv-empty">
               <div className="inv-empty-ico" aria-hidden>
@@ -433,7 +389,7 @@ export default function InVideoWorkspace() {
                   <circle cx="32" cy="32" r="7" stroke="#c4c9d4" strokeWidth="2" />
                 </svg>
               </div>
-              <div className="inv-empty-title">No videos yet</div>
+              <div className="inv-empty-title">{running.length ? 'Đang tạo video…' : 'No videos yet'}</div>
               <div className="inv-empty-sub">Click &apos;Create&apos; to get started.</div>
               <button type="button" className="inv-btn-create ghost" onClick={openCreate}>
                 + Create
@@ -442,16 +398,42 @@ export default function InVideoWorkspace() {
           ) : (
             <div className="inv-video-grid">
               {videos.map((v) => (
-                <article key={v.id} className="inv-video-card">
-                  <div className="inv-video-thumb">
+                <article key={v.path} className="inv-video-card">
+                  <div className="inv-video-thumb" onClick={() => setPlaying(v.path)} role="button" tabIndex={0}>
+                    <video src={`${fileUrl(v.path)}#t=0.5`} preload="metadata" muted />
                     <span>▶</span>
                   </div>
                   <div className="inv-video-meta">
-                    <div className="inv-video-title">{v.title}</div>
-                    <div className="inv-video-when">{v.when}</div>
+                    <div className="inv-video-title" title={v.name}>
+                      {v.name.replace(/^\d{8}_\d{6}_/, '').replace(/\.mp4$/i, '')}
+                    </div>
+                    <div className="inv-video-when">
+                      {new Date(v.t * 1000).toLocaleString('vi-VN')} · {(v.size / 1048576).toFixed(1)} MB
+                    </div>
+                    <div className="inv-video-acts">
+                      <button type="button" className="inv-linkish" onClick={() => openFolder(v.path.replace(/[\\/][^\\/]*$/, ''))}>
+                        📂 Thư mục
+                      </button>
+                      <button
+                        type="button"
+                        className="inv-linkish"
+                        onClick={() => {
+                          if (!window.confirm(`Xoá ${v.name}?`)) return
+                          void api('/api/invideo/delete', { path: v.path }).then(loadVideos)
+                        }}
+                      >
+                        🗑 Xoá
+                      </button>
+                    </div>
                   </div>
                 </article>
               ))}
+            </div>
+          )}
+
+          {playing && (
+            <div className="inv-modal-backdrop" onClick={() => setPlaying(null)}>
+              <video className="inv-player" src={fileUrl(playing)} controls autoPlay onClick={(e) => e.stopPropagation()} />
             </div>
           )}
 
@@ -463,16 +445,7 @@ export default function InVideoWorkspace() {
               <button
                 type="button"
                 className="inv-linkish"
-                onClick={() => {
-                  setLogs([
-                    {
-                      id: Date.now(),
-                      time: new Date().toLocaleTimeString('vi-VN', { hour12: false }),
-                      level: 'INFO',
-                      msg: 'Đã xóa nhật ký (mock).',
-                    },
-                  ])
-                }}
+                onClick={() => setLogs([])}
               >
                 Xóa
               </button>
@@ -508,7 +481,7 @@ export default function InVideoWorkspace() {
                 className="inv-btn-ghost"
                 onClick={() => {
                   setShowSetup(true)
-                  pushLog('INFO', 'Mở lại AI Models Setup.')
+                  void loadSetup()
                 }}
               >
                 AI Models
@@ -517,7 +490,7 @@ export default function InVideoWorkspace() {
                 type="button"
                 className="inv-btn-primary"
                 disabled={creating}
-                onClick={handleCreateVideo}
+                onClick={() => void handleCreateVideo()}
               >
                 {creating ? 'Đang tạo…' : 'Tạo video'}
               </button>
@@ -573,6 +546,31 @@ export default function InVideoWorkspace() {
                   </div>
                 )}
 
+                {(input === 'idea' || input === 'script') && (
+                  <div className="inv-grid-2">
+                    <div className="inv-field">
+                      <label>Ngôn ngữ</label>
+                      <select value={lang} onChange={(e) => setLang(e.target.value)}>
+                        {LANGS.map((l) => (
+                          <option key={l} value={l}>
+                            {l}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="inv-field">
+                      <label>Giọng đọc (Gemini TTS)</label>
+                      <select value={voice} onChange={(e) => setVoice(e.target.value)}>
+                        {VOICES.map((v) => (
+                          <option key={v} value={v}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
                 {input === 'audio' && (
                   <>
                     <div className="inv-field">
@@ -581,38 +579,26 @@ export default function InVideoWorkspace() {
                         className="inv-drop"
                         role="button"
                         tabIndex={0}
-                        onClick={() => fileRef.current?.click()}
+                        onClick={() => void chooseAudio()}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') fileRef.current?.click()
-                        }}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => {
-                          e.preventDefault()
-                          onPickAudio(e.dataTransfer.files?.[0])
+                          if (e.key === 'Enter' || e.key === ' ') void chooseAudio()
                         }}
                       >
                         <div className="inv-drop-ico">☁️</div>
                         <div>
                           {audioFile ? (
                             <>
-                              <strong>{audioFile}</strong>
+                              <strong>{baseName(audioFile)}</strong>
                               <div className="muted">Nhấn để đổi file</div>
                             </>
                           ) : (
                             <>
-                              <strong>Kéo thả hoặc nhấn để chọn file</strong>
-                              <div className="muted">MP3, WAV, M4A…</div>
+                              <strong>Nhấn để chọn file</strong>
+                              <div className="muted">MP3, WAV, M4A… — phiên âm bằng Whisper / Gemini</div>
                             </>
                           )}
                         </div>
                       </div>
-                      <input
-                        ref={fileRef}
-                        type="file"
-                        accept="audio/*"
-                        hidden
-                        onChange={(e) => onPickAudio(e.target.files?.[0])}
-                      />
                     </div>
                     <div className="inv-wave-row">
                       <div className="inv-wave-left">
@@ -718,19 +704,24 @@ export default function InVideoWorkspace() {
                   <div className="inv-link-block">
                     <div className="inv-field">
                       <label>Link / file nguồn</label>
-                      <div className="inv-link-input">
-                        <span className="ico">🌐</span>
-                        <input
-                          type="text"
-                          placeholder="Dán link hoặc đường dẫn file cần dịch & lồng tiếng…"
-                          value={link}
-                          onChange={(e) => setLink(e.target.value)}
-                        />
+                      <div className="inv-link-row">
+                        <div className="inv-link-input">
+                          <span className="ico">🌐</span>
+                          <input
+                            type="text"
+                            placeholder="Dán link hoặc đường dẫn file cần dịch & lồng tiếng…"
+                            value={link}
+                            onChange={(e) => setLink(e.target.value)}
+                          />
+                        </div>
+                        <button type="button" className="inv-btn-ghost" onClick={() => void chooseVideo(setLink)}>
+                          📁 File…
+                        </button>
                       </div>
                     </div>
                     <div className="inv-grid-2">
                       <div className="inv-field">
-                        <label>Ngôn ngữ nguồn</label>
+                        <label>Dịch sang</label>
                         <select value={lang} onChange={(e) => setLang(e.target.value)}>
                           {LANGS.map((l) => (
                             <option key={l} value={l}>
@@ -783,39 +774,13 @@ export default function InVideoWorkspace() {
                 {media === 'gameplay' && (
                   <div className="inv-bg-block">
                     <h3>Chọn video nền</h3>
-                    <div className="inv-bg-cats">
-                      {BG_CATS.map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          className={`inv-cat ${bgCat === c ? 'on' : ''}`}
-                          onClick={() => {
-                            setBgCat(c)
-                            setBgId(1)
-                          }}
-                        >
-                          {c}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="inv-bg-thumbs">
-                      {thumbs.map((t) => (
-                        <button
-                          key={t.id}
-                          type="button"
-                          className={`inv-thumb ${bgId === t.id ? 'on' : ''}`}
-                          style={{
-                            background: `linear-gradient(145deg, hsl(${t.hue} 55% 42%), hsl(${
-                              (t.hue + 40) % 360
-                            } 60% 28%))`,
-                          }}
-                          onClick={() => setBgId(t.id)}
-                          title={t.label}
-                        >
-                          {bgId === t.id && <span className="chk">✓</span>}
-                          <span className="cap">{t.label}</span>
-                        </button>
-                      ))}
+                    <div className="inv-link-row">
+                      <button type="button" className="inv-btn-ghost" onClick={() => void chooseVideo(setBg)}>
+                        📁 Chọn video nền…
+                      </button>
+                      <span className="muted" title={bg}>
+                        {bg ? baseName(bg) : 'Chưa chọn — video được lặp cho đủ thời lượng, phụ đề ở giữa'}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -865,7 +830,7 @@ export default function InVideoWorkspace() {
                     className="inv-more-trans"
                     onClick={() => setShowMoreTrans((s) => !s)}
                   >
-                    {showMoreTrans ? 'Thu gọn' : 'Xem thêm 35 hiệu ứng'} ▾
+                    {showMoreTrans ? 'Thu gọn' : `Xem thêm ${EXTRA_TRANS.length} hiệu ứng`} ▾
                   </button>
                   {showMoreTrans && (
                     <div className="inv-trans-grid wipe extra">
@@ -873,9 +838,10 @@ export default function InVideoWorkspace() {
                         <button
                           key={t.id}
                           type="button"
-                          className="inv-trans"
-                          onClick={() => flash(`Hiệu ứng ${t.label} (mock)`)}
+                          className={`inv-trans ${trans === t.id ? 'on' : ''}`}
+                          onClick={() => setTrans(t.id)}
                         >
+                          {trans === t.id && <span className="chk">✓</span>}
                           <span className="ico blue">{t.icon}</span>
                           <strong>{t.label}</strong>
                         </button>
@@ -935,10 +901,10 @@ export default function InVideoWorkspace() {
                 )}
                 {media === 'gameplay' && (
                   <div>
-                    Nền: <strong>{bgCat} #{bgId}</strong>
+                    Nền: <strong>{bg ? baseName(bg) : '—'}</strong>
                   </div>
                 )}
-                {input === 'link' && audioSrc === 'tts' && (
+                {(input === 'idea' || input === 'script' || input === 'dub' || (input === 'link' && audioSrc === 'tts')) && (
                   <div>
                     TTS: <strong>{voice}</strong>
                   </div>
@@ -962,61 +928,62 @@ export default function InVideoWorkspace() {
               <div className="inv-modal-ico">⚙️</div>
               <div>
                 <h2 id="inv-setup-title">AI Models Setup</h2>
-                <p>Download models for transcription</p>
+                <p>Công cụ & khoá cần cho InVideo</p>
               </div>
               <button type="button" className="inv-modal-x" onClick={() => closeSetup(false)}>
                 ×
               </button>
             </header>
-            <div className="inv-steps">
-              {[1, 2, 3].map((n) => (
-                <div key={n} className={`inv-step ${n === 1 ? 'on' : ''}`}>
-                  <span>{n}</span>
-                </div>
-              ))}
-            </div>
             <div className="inv-model-list">
-              {models.map((m) => (
-                <div key={m.id} className="inv-model-row">
-                  <div className={`inv-model-ico ${m.tone}`}>{m.icon}</div>
+              {(
+                [
+                  ['ffmpeg', 'FFmpeg', 'Dựng & ghép video', setup?.ffmpeg, 'winget install Gyan.FFmpeg'],
+                  ['ytdlp', 'yt-dlp', 'Tải video từ link', setup?.ytdlp, 'winget install yt-dlp.yt-dlp'],
+                  ['deno', 'Deno', 'yt-dlp cần để giải mã YouTube', setup?.deno, 'winget install DenoLand.Deno'],
+                  ['whisper', 'faster-whisper', 'Phiên âm cục bộ (không có thì dùng Gemini)', setup?.whisper, ''],
+                  ['gemini', 'Gemini key', `Viết kịch bản, TTS, dịch · ${setup?.gemini ?? 0} key`, !!setup?.gemini, 'Cài đặt › Tài khoản'],
+                  ['pexels', 'Pexels API key', 'Ảnh / video stock (miễn phí)', setup?.pexels, ''],
+                ] as const
+              ).map(([id, name, desc, ok, hint]) => (
+                <div key={id} className="inv-model-row">
+                  <div className={`inv-model-ico ${ok ? 'blue' : 'orange'}`}>{ok ? '✓' : '!'}</div>
                   <div className="inv-model-info">
-                    <strong>{m.name}</strong>
-                    <span>{m.desc}</span>
-                    {m.status === 'downloading' && (
-                      <div className="inv-model-bar">
-                        <i style={{ width: `${m.progress}%` }} />
+                    <strong>{name}</strong>
+                    <span>{desc}</span>
+                    {!ok && hint && <span className="muted">Cài: {hint}</span>}
+                    {id === 'whisper' && !ok && (
+                      <button
+                        type="button"
+                        className="inv-btn-ghost"
+                        disabled={setupJob?.status === 'dang_chay'}
+                        onClick={() => void installWhisper()}
+                      >
+                        {setupJob?.status === 'dang_chay' ? setupJob.msg || 'Đang cài…' : '⬇ Cài faster-whisper + model'}
+                      </button>
+                    )}
+                    {id === 'whisper' && setupJob?.status === 'loi' && <span className="muted">❌ {setupJob.msg}</span>}
+                    {id === 'pexels' && (
+                      <div className="inv-link-row">
+                        <input
+                          className="inv-key"
+                          type="password"
+                          placeholder={ok ? 'Đã lưu — dán key mới để thay' : 'Dán Pexels API key…'}
+                          value={pexelsKey}
+                          onChange={(e) => setPexelsKey(e.target.value)}
+                        />
+                        <button type="button" className="inv-btn-ghost" disabled={!pexelsKey.trim()} onClick={() => void savePexels()}>
+                          Lưu
+                        </button>
                       </div>
                     )}
                   </div>
-                  <div className={`inv-model-status ${m.status}`}>
-                    {m.status === 'done' ? '✓' : m.status === 'downloading' ? `${m.progress}%` : m.size}
-                  </div>
+                  <div className={`inv-model-status ${ok ? 'done' : 'pending'}`}>{ok ? '✓' : '—'}</div>
                 </div>
               ))}
             </div>
-            <button
-              type="button"
-              className="inv-dl-all"
-              disabled={downloading || remaining === 0}
-              onClick={startDownloadAll}
-            >
-              ⬇{' '}
-              {remaining === 0
-                ? 'All models ready'
-                : downloading
-                  ? 'Downloading…'
-                  : `Download All Models (${remaining} remaining)`}
+            <button type="button" className="inv-dl-all" onClick={() => void loadSetup()}>
+              ↻ Kiểm tra lại
             </button>
-            <div className="inv-info-box">
-              <span className="i">ℹ</span>
-              <ul>
-                <li>~920MB total disk space (Whisper + Deno)</li>
-                <li>Downloads sequentially — just click once!</li>
-                <li>GPU auto-detection for faster transcription</li>
-                <li>Deno enables YouTube video/audio download</li>
-                <li>All processing happens locally (100% private)</li>
-              </ul>
-            </div>
             <button type="button" className="inv-skip" onClick={() => closeSetup(true)}>
               Bỏ qua / dùng sau
             </button>

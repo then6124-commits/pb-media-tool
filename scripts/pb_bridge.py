@@ -218,8 +218,15 @@ def tk_hanh_dong(viec: str, d: dict) -> dict:
 
 
 def gemini_keys(moi: str | None = None) -> list[str]:
-    """Khoá Gemini — đọc/ghi CHUNG cấu hình TTS của tool cũ (tts.load_config)."""
-    import tts
+    """Khoá Gemini — đọc/ghi CHUNG cấu hình TTS của tool cũ (tts.load_config).
+
+    Không có tool cũ (thiếu module tts) thì lưu ở pb_bridge.json của cầu nối."""
+    try:
+        import tts
+    except ImportError:
+        if moi is not None:
+            cau_hinh({"gemini_keys": "\n".join(_ds_khoa(moi))})
+        return _ds_khoa(cau_hinh().get("gemini_keys"))
     cfg = tts.load_config() or {}
     if moi is not None:
         ds = [x.strip() for x in moi.replace(",", "\n").splitlines() if x.strip()]
@@ -1952,6 +1959,429 @@ def ghep_video(paths, d: dict) -> dict:
     return _chay_nen("ghep", ds[0], out_dir, viec, "ghep")
 
 
+# ───────────────────────── InVideo ─────────────────────────
+#
+# Video tự động kiểu InVideo: lời (ý tưởng / kịch bản / audio / link / lồng
+# tiếng) → cảnh → ảnh/video stock Pexels (hoặc video nền) → chuyển cảnh xfade
+# → phụ đề cứng → MP4. Mọi bước chạy trong một việc nền «invideo».
+
+OUT_INVIDEO = os.path.join(OUT_MAC_DINH, "InVideo")
+KHUNG = {"doc": (1080, 1920), "ngang": (1920, 1080), "vuong": (1080, 1080)}
+HUONG_PEXELS = {"doc": "portrait", "ngang": "landscape", "vuong": "square"}
+MA_NGON_NGU = {"Tiếng Việt": "vi", "English": "en", "中文": "zh", "日本語": "ja", "한국어": "ko",
+               "Español": "es", "Français": "fr"}
+# Tên hiệu ứng giao diện → transition của ffmpeg xfade
+XFADE = {"fade": "fade", "fade_black": "fadeblack", "fade_gray": "fadegrays",
+         "wipe_left": "wipeleft", "wipe_right": "wiperight", "wipe_up": "wipeup",
+         "wipe_down": "wipedown", "dir_wipe": "diagtl", "slide": "slideleft", "wind": "hlwind",
+         "crosswarp": "distance", "zoom_in": "zoomin", "zoom_out": "squeezeh", "blur": "hblur",
+         "pixelate": "pixelize", "circle": "circleopen", "diamond": "rectcrop",
+         "clock": "radial", "radial": "radial"}
+T_CHUYEN = 0.5
+
+
+def _tai_url(url: str, dich: str, headers: dict | None = None) -> str:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", **(headers or {})})
+    with urllib.request.urlopen(req, timeout=120) as r, open(dich, "wb") as f:
+        shutil.copyfileobj(r, f)
+    return dich
+
+
+def pexels_tim(q: str, video: bool, ratio: str) -> str:
+    """URL tải ảnh/video Pexels khớp từ khoá + hướng khung. '' nếu không thấy."""
+    import urllib.parse
+    key = str(cau_hinh().get("pexels_key") or os.environ.get("PB_PEXELS_KEY") or "")
+    if not key:
+        raise RuntimeError("Chưa có Pexels API key — nhập ở InVideo › AI Models (miễn phí tại pexels.com/api)")
+    url = ("https://api.pexels.com/%s/search?query=%s&orientation=%s&per_page=8" % (
+        "videos" if video else "v1", urllib.parse.quote(q), HUONG_PEXELS.get(ratio, "portrait")))
+    ma, raw = _http_json(url, None, {"Authorization": key}, timeout=60)
+    if ma != 200:
+        raise RuntimeError("Pexels HTTP %d" % ma)
+    data = json.loads(raw)
+    if not video:
+        ds = data.get("photos") or []
+        return ((ds[0].get("src") or {}).get("large2x") or "") if ds else ""
+    for v in data.get("videos") or []:
+        tep = sorted((f for f in v.get("video_files") or [] if f.get("file_type") == "video/mp4"),
+                     key=lambda f: abs((f.get("height") or 0) - 1080))
+        if tep:
+            return tep[0]["link"]
+    return ""
+
+
+def _chia_canh(text: str, toi_da_tu: int = 22) -> list[str]:
+    """Văn → cảnh: gom câu tới ~toi_da_tu từ mỗi cảnh."""
+    cau = [c.strip() for c in re.split(r"(?<=[.!?。！？…])\s+|\n+", text) if c.strip()]
+    canh, cur = [], ""
+    for c in cau:
+        if cur and len((cur + " " + c).split()) > toi_da_tu:
+            canh.append(cur)
+            cur = c
+        else:
+            cur = (cur + " " + c).strip()
+    if cur:
+        canh.append(cur)
+    return canh
+
+
+def _gom_doan(segs: list[dict], toi_thieu: float = 4.0, toi_da: float = 9.0) -> list[dict]:
+    """Câu phiên âm có mốc → cảnh 4–9 giây, nối liền (cảnh sau bắt đầu đúng chỗ cảnh trước hết)."""
+    canh = []
+    for s in segs:
+        if canh and (s["end"] - canh[-1]["start"] <= toi_da or canh[-1]["end"] - canh[-1]["start"] < toi_thieu):
+            canh[-1]["end"] = s["end"]
+            canh[-1]["text"] += " " + s["text"]
+            canh[-1]["caps"].append(dict(s))
+        else:
+            canh.append({"start": s["start"], "end": s["end"], "text": s["text"], "caps": [dict(s)]})
+    if canh:
+        canh[0]["start"] = 0.0
+        for a, b in zip(canh, canh[1:]):
+            a["end"] = b["start"]
+    return canh
+
+
+def _tu_khoa(texts: list[str]) -> list[str]:
+    """Mỗi cảnh một cụm từ khoá tiếng Anh để tìm stock. Không có Gemini thì lấy chữ đầu câu."""
+    try:
+        raw = gemini_text(
+            "For each numbered narration line, give ONE short English stock-footage search query "
+            "(2-4 concrete visual words). Return ONLY a JSON array of strings, same order.\n\n"
+            + "\n".join("%d. %s" % (i + 1, t) for i, t in enumerate(texts)))
+        m = re.search(r"\[.*\]", _bo_rao(raw), re.S)
+        ds = json.loads(m.group(0) if m else raw)
+        if len(ds) == len(texts):
+            return [str(x) for x in ds]
+    except Exception as e:
+        log("⚠ Không lấy được từ khoá bằng Gemini: %s" % e, "INFO", "invideo")
+    return [" ".join(t.split()[:4]) for t in texts]
+
+
+def _cat_phu_de(canh: list[dict], toi_da_tu: int = 7) -> list[dict]:
+    """Phụ đề ngắn: chia lời mỗi cảnh thành cụm ≤ toi_da_tu từ, thời gian chia theo số ký tự."""
+    ra = []
+    for c in canh:
+        for cap in c.get("caps") or [c]:
+            tu = cap["text"].split()
+            cum = [" ".join(tu[i:i + toi_da_tu]) for i in range(0, len(tu), toi_da_tu)] or [""]
+            tong = sum(len(x) for x in cum) or 1
+            t = cap["start"]
+            for x in cum:
+                dai = (cap["end"] - cap["start"]) * len(x) / tong
+                ra.append({"start": t, "end": t + dai, "text": x})
+                t += dai
+    return [x for x in ra if x["text"]]
+
+
+def _dung_canh(src: str, la_anh: bool, L: float, w: int, h: int, out: str) -> None:
+    ff = _exe("ffmpeg")
+    if not src:
+        lenh = [ff, "-y", "-v", "error", "-f", "lavfi", "-i",
+                "gradients=s=%dx%d:c0=0x0f172a:c1=0x1e3a8a:speed=0.01:d=%.3f:r=30" % (w, h, L)]
+    elif la_anh:
+        n = max(1, int(round(L * 30)))
+        lenh = [ff, "-y", "-v", "error", "-i", src, "-vf",
+                "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,"
+                "zoompan=z='min(zoom+0.0007,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                ":d=%d:s=%dx%d:fps=30" % (w * 2, h * 2, w * 2, h * 2, n, w, h), "-frames:v", str(n)]
+    else:
+        lenh = [ff, "-y", "-v", "error", "-stream_loop", "-1", "-i", src, "-t", "%.3f" % L, "-vf",
+                "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,fps=30" % (w, h, w, h)]
+    lenh += ["-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+             "-r", "30", "-t", "%.3f" % L, out]
+    subprocess.run(lenh, check=True, creationflags=_KHONG_CUA_SO)
+
+
+def _noi_hinh(clips: list[str], durs: list[float], trans: str, out: str) -> None:
+    """Nối các clip hình. Mỗi clip (trừ cuối) dài hơn cảnh T_CHUYEN giây để xfade ăn vào."""
+    ff = _exe("ffmpeg")
+    if trans == "none" or len(clips) == 1:
+        ds = out + ".txt"
+        with open(ds, "w", encoding="utf-8") as f:
+            f.writelines("file '%s'\n" % c.replace("\\", "/") for c in clips)
+        subprocess.run([ff, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", ds, "-c", "copy", out],
+                       check=True, creationflags=_KHONG_CUA_SO)
+        return
+    loai = XFADE.get(trans, "fade")
+    lenh = [ff, "-y", "-v", "error"]
+    for c in clips:
+        lenh += ["-i", c]
+    loc, truoc, moc = [], "[0:v]", 0.0
+    for i in range(1, len(clips)):
+        moc += durs[i - 1]
+        nhan = "[x%d]" % i
+        loc.append("%s[%d:v]xfade=transition=%s:duration=%.3f:offset=%.3f%s" % (
+            truoc, i, loai, T_CHUYEN, moc, nhan))
+        truoc = nhan
+    lenh += ["-filter_complex", ";".join(loc), "-map", truoc, "-c:v", "libx264", "-preset", "veryfast",
+             "-crf", "20", "-pix_fmt", "yuv420p", out]
+    subprocess.run(lenh, check=True, creationflags=_KHONG_CUA_SO)
+
+
+def _xuat(hinh: str, am: str, caps: list[dict], d: dict, w: int, h: int, tmp: str, ra: str) -> None:
+    """Hình + tiếng + phụ đề cứng (+ sóng âm) → file cuối."""
+    ff = _exe("ffmpeg")
+    ghi_srt(caps, os.path.join(tmp, "cap.srt"))
+    giua = d.get("media") == "gameplay"
+    # FontSize tính theo PlayResY 288 mặc định của libass cho SRT — khung dọc chữ nhỏ lại
+    co = 13 if h > w else 18
+    kieu = ("FontName=Arial,FontSize=%d,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+            "BorderStyle=1,Outline=2,Shadow=1,Alignment=%d,MarginV=%d" % (co, 5 if giua else 2, 30))
+    if d.get("wave") and am:
+        loc = ("[0:v]subtitles=cap.srt:force_style='%s'[v0];"
+               "[1:a]showwaves=s=%dx%d:mode=cline:colors=white@0.85,format=rgba[w];"
+               "[v0][w]overlay=0:%d[v]" % (kieu, w, h // 7, int(h * 0.72)))
+    else:
+        loc = "[0:v]subtitles=cap.srt:force_style='%s'[v]" % kieu
+    lenh = [ff, "-y", "-v", "error", "-i", hinh] + (["-i", am] if am else [])
+    lenh += ["-filter_complex", loc, "-map", "[v]"] + (["-map", "1:a"] if am else [])
+    lenh += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", ra]
+    # cwd=tmp: «cap.srt» khỏi phải thoát dấu «:» của ổ đĩa Windows trong filter
+    subprocess.run(lenh, check=True, creationflags=_KHONG_CUA_SO, cwd=tmp)
+
+
+def _tai_link(url: str, tmp: str, lang: str) -> tuple[str, list[dict]]:
+    """yt-dlp: video + phụ đề (nếu có) → (đường dẫn mp4, câu phụ đề)."""
+    ma = MA_NGON_NGU.get(lang, "en")
+    subprocess.run([_exe("yt-dlp"), "-f", "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4]/b",
+                    "--merge-output-format", "mp4", "--no-playlist", "--no-warnings",
+                    "--write-subs", "--write-auto-subs", "--sub-langs", "%s.*,%s" % (ma, ma),
+                    "--convert-subs", "srt", "-o", os.path.join(tmp, "src.%(ext)s"), url],
+                   check=True, creationflags=_KHONG_CUA_SO, capture_output=True)
+    vid = os.path.join(tmp, "src.mp4")
+    if not os.path.isfile(vid):
+        raise RuntimeError("yt-dlp không tải được video")
+    srt = next((os.path.join(tmp, f) for f in os.listdir(tmp) if f.endswith(".srt")), "")
+    return vid, (doc_srt(srt) if srt else [])
+
+
+def _doc_canh(canh: list[dict], voice: str, tmp: str, v: dict) -> str:
+    """TTS từng cảnh → gán start/end theo độ dài tiếng, trả file tiếng đã nối."""
+    t, ds = 0.0, []
+    for i, c in enumerate(canh, 1):
+        v["msg"] = "Đọc giọng %d/%d…" % (i, len(canh))
+        p = tts_tao("gemini", c["text"], os.path.join(tmp, "tts_%03d" % i), voice)
+        dai = _thoi_luong(p)
+        c.update(start=t, end=t + dai)
+        c["caps"] = [{"start": t, "end": t + dai, "text": c["text"]}]
+        t += dai
+        ds.append(p)
+    return noi_audio(ds, os.path.join(tmp, "loi.wav"))
+
+
+def invideo_tao(d: dict) -> dict:
+    kieu = str(d.get("input") or "script")
+    ratio = d.get("ratio") if d.get("ratio") in KHUNG else "doc"
+    w, h = KHUNG[ratio]
+    if kieu == "audio" and not os.path.isfile(str(d.get("audio") or "")):
+        raise RuntimeError("Chưa chọn file âm thanh")
+    if kieu in ("link", "dub") and not str(d.get("link") or "").strip():
+        raise RuntimeError("Chưa có link / file nguồn")
+    if kieu in ("idea", "script") and not str(d.get("text") or "").strip():
+        raise RuntimeError("Chưa nhập nội dung")
+    if d.get("media") == "gameplay" and kieu != "dub" and not os.path.isfile(str(d.get("bg") or "")):
+        raise RuntimeError("Chưa chọn video nền")
+    os.makedirs(OUT_INVIDEO, exist_ok=True)
+    goc = str(d.get("title") or d.get("text") or d.get("link") or d.get("audio") or "video")
+    if os.path.isfile(goc):
+        goc = os.path.splitext(os.path.basename(goc))[0]
+    elif re.match(r"https?://", goc):
+        goc = re.sub(r"^https?://(www\.)?", "", goc)
+    nhan = re.sub(r'[\\/:*?"<>|\s]+', " ", goc)[:50].strip(" .") or "video"
+    ra = os.path.join(OUT_INVIDEO, "%s_%s.mp4" % (time.strftime("%Y%m%d_%H%M%S"), nhan))
+    voice = str(d.get("voice") or "Kore")
+    lang = str(d.get("lang") or "Tiếng Việt")
+
+    def viec(v):
+        tmp = os.path.join(REF_DIR, "invideo_" + v["id"])
+        os.makedirs(tmp, exist_ok=True)
+        try:
+            # ── 1. Lời & cảnh ──
+            am, nen_goc = "", ""
+            if kieu == "dub":
+                return _long_tieng(d, tmp, ra, v, w, h, voice, lang)
+            if kieu in ("idea", "script"):
+                text = str(d["text"]).strip()
+                if kieu == "idea":
+                    v["msg"] = "Gemini viết kịch bản…"
+                    text = _bo_rao(gemini_text(
+                        "Viết lời dẫn cho video ngắn ~60–90 giây bằng %s từ ý tưởng dưới đây. Mở bằng "
+                        "hook mạnh, câu ngắn dễ đọc to, không tiêu đề, không markdown, không ghi chú "
+                        "cảnh — chỉ lời đọc.\n\nÝ tưởng: %s" % (lang, text)))
+                canh = [{"text": t} for t in _chia_canh(text)]
+                am = _doc_canh(canh, voice, tmp, v)
+            elif kieu == "audio":
+                v["msg"] = "Phiên âm audio…"
+                am = str(d["audio"])
+                canh = _gom_doan(phien_am(am))
+                if canh:
+                    canh[-1]["end"] = max(canh[-1]["end"], _thoi_luong(am))
+            else:  # link
+                v["msg"] = "Tải video từ link…"
+                nguon, segs = _tai_link(str(d["link"]).strip(), tmp, lang)
+                if not segs:
+                    v["msg"] = "Không có phụ đề — phiên âm…"
+                    segs = phien_am(nguon)
+                if d.get("audioSrc") == "original":
+                    am = os.path.join(tmp, "goc.m4a")
+                    subprocess.run([_exe("ffmpeg"), "-y", "-v", "error", "-i", nguon, "-vn", "-c:a", "aac",
+                                    am], check=True, creationflags=_KHONG_CUA_SO)
+                    canh = _gom_doan(segs)
+                    if canh:
+                        canh[-1]["end"] = max(canh[-1]["end"], _thoi_luong(am))
+                else:
+                    canh = [{"text": c["text"]} for c in _gom_doan(segs)]
+                    am = _doc_canh(canh, voice, tmp, v)
+            if not canh:
+                raise RuntimeError("Không có lời nào để dựng video")
+
+            # ── 2. Hình mỗi cảnh ──
+            durs = [max(0.5, c["end"] - c["start"]) for c in canh]
+            if d.get("media") == "gameplay":
+                v["msg"] = "Dựng video nền…"
+                hinh = os.path.join(tmp, "hinh.mp4")
+                _dung_canh(str(d["bg"]), False, sum(durs), w, h, hinh)
+            else:
+                la_video = d.get("media") == "stock_vid"
+                v["msg"] = "Tìm từ khoá stock…"
+                tu = _tu_khoa([c["text"] for c in canh])
+                clips = []
+                for i, (c, q) in enumerate(zip(canh, tu), 1):
+                    v["msg"] = "Cảnh %d/%d · %s" % (i, len(canh), q)
+                    src = ""
+                    try:
+                        url = pexels_tim(q, la_video, ratio)
+                        if url:
+                            src = _tai_url(url, os.path.join(tmp, "src_%03d%s" % (i, ".mp4" if la_video else ".jpg")))
+                    except RuntimeError:
+                        raise
+                    except Exception as e:
+                        log("⚠ Cảnh %d không tải được stock «%s»: %s" % (i, q, e), "INFO", "invideo")
+                    L = durs[i - 1] + (T_CHUYEN if (i < len(canh) and d.get("trans") != "none") else 0)
+                    clip = os.path.join(tmp, "clip_%03d.mp4" % i)
+                    _dung_canh(src, not la_video, L, w, h, clip)
+                    clips.append(clip)
+                v["msg"] = "Nối cảnh + chuyển cảnh…"
+                hinh = os.path.join(tmp, "hinh.mp4")
+                _noi_hinh(clips, durs, str(d.get("trans") or "fade"), hinh)
+
+            # ── 3. Xuất ──
+            v["msg"] = "Xuất video + phụ đề…"
+            _xuat(hinh, am, _cat_phu_de(canh), d, w, h, tmp, ra)
+            with open(os.path.splitext(ra)[0] + ".txt", "w", encoding="utf-8") as f:
+                f.write("\n".join(c["text"] for c in canh))
+            v["msg"] = "Xong · %d cảnh · %.1fs" % (len(canh), sum(durs))
+            return ra
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    log("🎬 InVideo: %s · %s · %s" % (kieu, d.get("media"), ratio), "INFO", "invideo")
+    return _chay_nen("invideo", nhan, OUT_INVIDEO, viec, "invideo")
+
+
+def _long_tieng(d: dict, tmp: str, ra: str, v: dict, w: int, h: int, voice: str, lang: str) -> str:
+    """Dịch & lồng tiếng: giữ hình gốc, thay tiếng bằng giọng đọc bản dịch đặt đúng mốc."""
+    nguon = str(d["link"]).strip()
+    if re.match(r"https?://", nguon):
+        v["msg"] = "Tải video…"
+        nguon, segs = _tai_link(nguon, tmp, "English")
+    elif os.path.isfile(nguon):
+        segs = []
+    else:
+        raise RuntimeError("Không thấy file: %s" % nguon)
+    if not segs:
+        v["msg"] = "Phiên âm…"
+        segs = phien_am(nguon)
+    if not segs:
+        raise RuntimeError("Không nghe được lời nào")
+    v["msg"] = "Dịch %d câu sang %s…" % (len(segs), lang)
+    raw = _bo_rao(gemini_text(
+        "Dịch từng dòng sang %s, giữ nghĩa, ngắn gọn để đọc vừa thời lượng. Trả về DUY NHẤT JSON "
+        "mảng chuỗi, đúng số dòng và thứ tự.\n\n%s" % (
+            lang, "\n".join("%d. %s" % (i + 1, s["text"]) for i, s in enumerate(segs)))))
+    m = re.search(r"\[.*\]", raw, re.S)
+    dich = json.loads(m.group(0) if m else raw)
+    if len(dich) != len(segs):
+        raise RuntimeError("Gemini dịch lệch số dòng (%d/%d) — thử lại" % (len(dich), len(segs)))
+    ff = _exe("ffmpeg")
+    vao, loc = [], []
+    for i, (s, t) in enumerate(zip(segs, dich)):
+        v["msg"] = "Lồng tiếng %d/%d…" % (i + 1, len(segs))
+        s["text"] = str(t)
+        p = tts_tao("gemini", s["text"], os.path.join(tmp, "dub_%03d" % i), voice)
+        o = max(0.3, (segs[i + 1]["start"] if i + 1 < len(segs) else s["end"] + 1.5) - s["start"])
+        nhanh = min(1.6, max(1.0, _thoi_luong(p) / o))
+        vao += ["-i", p]
+        loc.append("[%d:a]atempo=%.3f,adelay=%d:all=1[d%d]" % (i, nhanh, int(s["start"] * 1000), i))
+    loc.append("".join("[d%d]" % i for i in range(len(segs)))
+               + "amix=inputs=%d:normalize=0:dropout_transition=0[a]" % len(segs))
+    am = os.path.join(tmp, "dub.wav")
+    subprocess.run([ff, "-y", "-v", "error", *vao, "-filter_complex", ";".join(loc), "-map", "[a]", am],
+                   check=True, creationflags=_KHONG_CUA_SO)
+    info = _probe(nguon)
+    w, h = (info["w"] or w) // 2 * 2, (info["h"] or h) // 2 * 2
+    hinh = os.path.join(tmp, "hinh.mp4")
+    subprocess.run([ff, "-y", "-v", "error", "-i", nguon, "-an", "-vf", "scale=%d:%d" % (w, h),
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", hinh],
+                   check=True, creationflags=_KHONG_CUA_SO)
+    # amix ngắn hơn video → đệm im lặng cho đủ, khỏi bị -shortest cắt hình
+    am2 = os.path.join(tmp, "dub_pad.wav")
+    subprocess.run([ff, "-y", "-v", "error", "-i", am, "-af", "apad", "-t", "%.3f" % info["dur"], am2],
+                   check=True, creationflags=_KHONG_CUA_SO)
+    v["msg"] = "Xuất video lồng tiếng…"
+    _xuat(hinh, am2, _cat_phu_de([{"start": s["start"], "end": s["end"], "text": s["text"]} for s in segs]),
+          {**d, "media": "dub"}, w, h, tmp, ra)
+    v["msg"] = "Xong · lồng tiếng %d câu" % len(segs)
+    return ra
+
+
+def invideo_ds() -> list[dict]:
+    if not os.path.isdir(OUT_INVIDEO):
+        return []
+    ra = []
+    for f in os.listdir(OUT_INVIDEO):
+        p = os.path.join(OUT_INVIDEO, f)
+        if f.lower().endswith(".mp4") and os.path.isfile(p):
+            ra.append({"path": p, "name": f, "t": os.path.getmtime(p), "size": os.path.getsize(p)})
+    return sorted(ra, key=lambda x: -x["t"])
+
+
+def invideo_trang_thai() -> dict:
+    try:
+        import faster_whisper  # type: ignore  # noqa: F401
+        whisper = True
+    except Exception:
+        whisper = False
+    cfg = cau_hinh()
+    return {"ffmpeg": ffmpeg_ok(), "ytdlp": bool(shutil.which("yt-dlp")), "deno": bool(shutil.which("deno")),
+            "whisper": whisper, "gemini": len(gemini_keys_an_toan()),
+            "pexels": bool(cfg.get("pexels_key") or os.environ.get("PB_PEXELS_KEY"))}
+
+
+def invideo_cai_whisper() -> dict:
+    """pip install faster-whisper + tải trước model — một việc nền."""
+    def viec(v):
+        v["msg"] = "pip install faster-whisper…"
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "faster-whisper"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=_KHONG_CUA_SO)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or "pip lỗi").strip()[-300:])
+        ten = os.environ.get("PB_WHISPER_MODEL") or "large-v3-turbo"
+        v["msg"] = "Tải model %s (~800 MB)…" % ten
+        r = subprocess.run([sys.executable, "-c", "from faster_whisper import WhisperModel as W; W(%r)" % ten],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=_KHONG_CUA_SO)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or "tải model lỗi").strip()[-300:])
+        v["msg"] = "Whisper sẵn sàng"
+        return ""
+    return _chay_nen("invideo-setup", "faster-whisper", "", viec, "invideo")
+
+
 # ───────────────────────── tiện ích ─────────────────────────
 
 def chon_thu_muc(goc: str = "") -> str:
@@ -2064,7 +2494,8 @@ class XuLy(BaseHTTPRequestHandler):
                         cho_phep.update(v.get("files") or [])
                         if v["status"] == "xong":
                             cho_phep.update(FLOW._file_canh(v["out_dir"], v["scene"], v["kind"]))
-                if p not in cho_phep or not os.path.isfile(p):
+                trong_out = os.path.abspath(p).startswith(os.path.abspath(OUT_MAC_DINH) + os.sep)
+                if (p not in cho_phep and not trong_out) or not os.path.isfile(p):
                     return self._json(404, {"ok": False})
                 with open(p, "rb") as f:
                     b = f.read()
@@ -2217,6 +2648,19 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "cfg": che,
                                         "gemini": len(gemini_keys_an_toan()),
                                         "eleven": len(eleven_keys())})
+            if u.path == "/api/invideo/create":
+                return self._json(200, {"ok": True, **invideo_tao(d)})
+            if u.path == "/api/invideo/list":
+                return self._json(200, {"ok": True, "items": invideo_ds()})
+            if u.path == "/api/invideo/setup":
+                if d.get("install") == "whisper":
+                    return self._json(200, {"ok": True, **invideo_cai_whisper()})
+                return self._json(200, {"ok": True, **invideo_trang_thai()})
+            if u.path == "/api/invideo/delete":
+                p = str(d.get("path") or "")
+                if os.path.dirname(os.path.abspath(p)) == os.path.abspath(OUT_INVIDEO) and os.path.isfile(p):
+                    os.remove(p)
+                return self._json(200, {"ok": True})
             if u.path == "/api/pick-folder":
                 return self._json(200, {"ok": True, "path": chon_thu_muc(d.get("start") or "")})
             if u.path == "/api/open-folder":
