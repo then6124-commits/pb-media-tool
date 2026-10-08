@@ -188,7 +188,10 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   const [editRow, setEditRow] = useState<{ id: string; status: RowStatus; text: string } | null>(null)
   /** Cỡ video kết quả: dạng danh sách = bề ngang ảnh (px), dạng lưới = số cột. */
   const [thumbW, setThumbW] = useState(() => loadJson('pb.vids.thumbw', 44))
-  const [gridCols, setGridCols] = useState(() => loadJson('pb.vids.gridcols', 4))
+  const [gridCols, setGridCols] = useState(() => {
+    const n: number = loadJson('pb.vids.gridcols', 4 as number)
+    return n === 6 || n === 8 ? n : 4
+  })
   useEffect(() => {
     try {
       localStorage.setItem('pb.vids.thumbw', JSON.stringify(thumbW))
@@ -1135,19 +1138,28 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
                 <button type="button" className={!gridView ? 'on' : ''} onClick={() => setGridView(false)} title="Danh sách">
                   <Ico n="list" size={14} />
                 </button>
-                <button type="button" className={gridView ? 'on' : ''} onClick={() => setGridView(true)} title="Lưới">
-                  <Ico n="grid" size={14} />
-                </button>
+                {(
+                  [
+                    [4, 'grid', 'Lưới 4 video mỗi hàng'],
+                    [6, 'grid6', 'Lưới 6 video mỗi hàng'],
+                    [8, 'grid8', 'Lưới 8 video mỗi hàng'],
+                  ] as const
+                ).map(([n, ico, tip]) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={gridView && gridCols === n ? 'on' : ''}
+                    title={tip}
+                    onClick={() => {
+                      setGridView(true)
+                      setGridCols(n)
+                    }}
+                  >
+                    <Ico n={ico} size={16} className="st-gridico" />
+                  </button>
+                ))}
               </div>
-              {gridView ? (
-                <div className="st-cols" title="Số video mỗi hàng">
-                  {[2, 3, 4, 5, 6, 8].map((n) => (
-                    <button key={n} type="button" className={gridCols === n ? 'on' : ''} onClick={() => setGridCols(n)}>
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              ) : (
+              {gridView ? null : (
                 <label className="st-size" title="Chỉnh to / nhỏ video kết quả">
                   <Ico n="image" size={12} />
                   <input

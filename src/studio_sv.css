@@ -472,3 +472,4 @@
 .st-edit-modal { width: min(760px, 92vw) !important; max-width: none !important; }
 .st-edit-text { min-height: 260px !important; resize: vertical; font-size: 13px !important; }
 .st-edit-modal .vids-modal-foot { display: flex; align-items: center; gap: 8px; }
+.st-gridico { stroke-width: 1.8; }

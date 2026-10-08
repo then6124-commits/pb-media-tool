@@ -51,6 +51,8 @@ type IcoName =
   | 'folderopen'
   | 'spin'
   | 'sliders'
+  | 'grid6'
+  | 'grid8'
   | 'extend'
 
 const PATHS: Record<IcoName, string> = {
@@ -86,6 +88,8 @@ const PATHS: Record<IcoName, string> = {
   file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8',
   list: 'M8 6h13 M8 12h13 M8 18h13 M3 6h.01 M3 12h.01 M3 18h.01',
   grid: 'M3 3h7v7H3z M14 3h7v7h-7z M14 14h7v7h-7z M3 14h7v7H3z',
+  grid6: 'M2.5 4.5h4.5v6H2.5z M9.75 4.5h4.5v6h-4.5z M17 4.5h4.5v6H17z M2.5 13.5h4.5v6H2.5z M9.75 13.5h4.5v6h-4.5z M17 13.5h4.5v6H17z',
+  grid8: 'M1.5 5.5h3v5h-3z M7.5 5.5h3v5h-3z M13.5 5.5h3v5h-3z M19.5 5.5h3v5h-3z M1.5 13.5h3v5h-3z M7.5 13.5h3v5h-3z M13.5 13.5h3v5h-3z M19.5 13.5h3v5h-3z',
   upload: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M17 8l-5-5-5 5 M12 3v12',
   search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.35-4.35',
   terminal: 'M4 17l6-6-6-6 M12 19h8',
