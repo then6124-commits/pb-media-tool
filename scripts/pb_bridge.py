@@ -287,6 +287,16 @@ def ma_dau_prompt(prompt: str) -> list[str]:
     return ra
 
 
+def giu_ma_dau(prompt: str) -> str:
+    """Cho bộ ghép ảnh của tool cũ (image_gen, dò @tag ở mọi chỗ trong prompt):
+    prompt có dòng mã ở đầu thì bỏ «@» của các mã nhắc ở phần sau, để chỉ mã ở
+    dòng đầu được bốc ảnh."""
+    m = _DAU_MA.match(prompt or "")
+    if not m:
+        return prompt
+    return prompt[:m.end()] + re.sub(r"@(?=[\w\-])", "", prompt[m.end():])
+
+
 def chon_ref(prompt: str, refs: list[dict], tran: int = 10) -> list[str]:
     """Ảnh tham chiếu gửi kèm prompt.
 
@@ -835,6 +845,8 @@ class LoFlow:
                                for n, t in prompts]
             if not prompts:
                 raise ValueError("Chưa có prompt")
+            # Dòng mã đầu prompt quyết định ảnh tham chiếu (như Vids/Muse).
+            prompts = [(n, giu_ma_dau(t)) for n, t in prompts]
 
             # File đầu vào chép sang thư mục riêng của mẻ, đặt tên theo đúng
             # luật image_gen dò: ảnh i2v theo SỐ CẢNH, ảnh nhân vật theo TAG.
@@ -2875,8 +2887,12 @@ def grok_chay(d: dict) -> dict:
                 body["image"] = {"url": _data_uri(it["image"])}
                 it["path"] = _xai_video(key, body, goc + ".mp4")
             elif mode == "Reference to Video":
+                if ma_dau_prompt(it["prompt"]):
+                    # Có dòng mã đầu prompt → chỉ gửi đúng ảnh của các mã đó, đúng thứ tự.
+                    it["refs"] = chon_ref(it["prompt"], [{"path": r} for r in it["refs"]], tran=7)
                 if not it["refs"]:
-                    raise RuntimeError("Reference to Video cần ít nhất 1 ảnh tham chiếu")
+                    raise RuntimeError("Reference to Video cần ít nhất 1 ảnh tham chiếu"
+                                       " (hoặc mã ở đầu prompt không khớp ảnh nào)")
                 body["reference_images"] = [{"url": _data_uri(r)} for r in it["refs"][:7]]
                 it["path"] = _xai_video(key, body, goc + ".mp4")
             elif mode == "Video Extend":
