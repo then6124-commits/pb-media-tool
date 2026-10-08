@@ -1,0 +1,452 @@
+# -*- coding: utf-8 -*-
+"""Video «vẽ tay» (whiteboard) từ một ảnh — tự viết, theo cách SuperVeo làm.
+
+Đã soi SuperVeo (giải nén giao diện trong SuperVeo.exe, 08/10/2026):
+  • Lệnh Rust `draw_video_maker(filePath, settings, outputDir)`, settings =
+    drawDurationSec 5 · holdDurationSec 0 · fps 30 · strokeWidth 4 (1–16) ·
+    bgColor #F6F1E3 · handImagePath + tipX/tipY (181,116) · inkRatio 0.8 ·
+    colorFillMode "contour-wipe" | "brush-reveal". Chạy theo lô, mỗi ảnh một
+    thời lượng riêng.
+  • 40 «draw style» KHÔNG phải hiệu ứng dựng — là mẫu prompt để AI vẽ ảnh nét
+    sạch trên nền trắng TRƯỚC, rồi mới đem ảnh đó đi «vẽ tay».
+  • 3 cách dựng (draw_motion_profile.renderer):
+      stroke_reveal  bút đi theo nét TRÁI → PHẢI, lộ ĐÚNG pixel gốc của ảnh
+      outline_fill   vẽ viền rồi tô màu
+      object_place   bàn tay kéo/đặt từng vật thể vào khung, xa trước gần sau
+    Tay «Đẩy hình» (place_*) đi với object_place; tay cầm bút đi stroke_reveal.
+
+Ở đây làm lại cùng ý tưởng bằng OpenCV + ffmpeg. KHÔNG dùng code hay ảnh
+(pen-presets) của SuperVeo. Bàn tay mặc định là cây bút chì tự vẽ; muốn dùng
+ảnh tay riêng thì bỏ PNG nền trong suốt vào scripts/draw_hands/<id>.png và khai
+đầu bút ở scripts/draw_hands/hands.json: {"<id>": {"tip": [x, y], "cao": 0.45}}.
+
+Chạy tay:  py draw_engine.py anh.png [ra.mp4]
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+import cv2
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+HANDS_DIR = os.path.join(HERE, "draw_hands")
+_KHONG_CUA_SO = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+NEN = {"white": (255, 255, 255), "cream": (227, 241, 246), "black": (20, 20, 20),
+       "transparent": (255, 255, 255)}          # BGR; mp4 không có kênh trong suốt
+MAU_NEN_SV = "#F6F1E3"                          # nền mặc định của SuperVeo
+
+
+def min_(a, b):
+    return a if a < b else b
+
+
+# ───────────────────────── ảnh vào / bàn tay ─────────────────────────
+
+def _doc_anh(path: str) -> np.ndarray:
+    """cv2.imread không đọc được đường dẫn có dấu tiếng Việt — đọc qua bytes."""
+    img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise RuntimeError("Không đọc được ảnh: %s" % path)
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if img.shape[2] == 4:                       # ảnh trong suốt → ghép lên nền trắng
+        a = img[:, :, 3:4].astype(np.float32) / 255.0
+        img = (img[:, :, :3] * a + 255 * (1 - a)).astype(np.uint8)
+    return img
+
+
+def _khung(img: np.ndarray, dai_max: int) -> np.ndarray:
+    h, w = img.shape[:2]
+    k = min_(1.0, dai_max / float(max(h, w)))
+    w2, h2 = int(w * k) // 2 * 2, int(h * k) // 2 * 2
+    return cv2.resize(img, (w2, h2), interpolation=cv2.INTER_AREA)
+
+
+def but_chi_mac_dinh(cao: int) -> tuple[np.ndarray, tuple[int, int]]:
+    """Cây bút chì tự vẽ (BGRA) nằm chéo, đầu bút ở góc dưới-trái. Trả (ảnh, đầu bút)."""
+    W = H = max(120, int(cao))
+    can = np.zeros((H, W, 4), np.uint8)
+    t = max(10, W // 9)
+    tip = np.array([4, H - 4], np.float32)
+    huong = np.array([1, -1], np.float32) / np.sqrt(2)
+    phap = np.array([1, 1], np.float32) / np.sqrt(2)
+
+    def tu_giac(a, b, rong, mau):
+        p = np.array([a + phap * rong / 2, b + phap * rong / 2,
+                      b - phap * rong / 2, a - phap * rong / 2], np.int32)
+        cv2.fillConvexPoly(can, p, mau, cv2.LINE_AA)
+
+    goc_go = tip + huong * (t * 1.6)
+    than_dau = tip + huong * (t * 2.6)
+    than_cuoi = tip + huong * (W * 1.25)
+    tu_giac(than_dau, than_cuoi, t, (40, 190, 245, 255))
+    tu_giac(than_cuoi - huong * t * 0.9, than_cuoi, t, (150, 150, 160, 255))
+    tu_giac(than_cuoi, than_cuoi + huong * t * 0.8, t, (140, 120, 235, 255))
+    go = np.array([tip, than_dau + phap * t / 2, than_dau - phap * t / 2], np.int32)
+    cv2.fillConvexPoly(can, go, (150, 200, 230, 255), cv2.LINE_AA)
+    ruot = np.array([tip, goc_go + phap * t * 0.22, goc_go - phap * t * 0.22], np.int32)
+    cv2.fillConvexPoly(can, ruot, (45, 45, 45, 255), cv2.LINE_AA)
+    return can, (int(tip[0]), int(tip[1]))
+
+
+def nap_ban_tay(hand_id: str, cao_khung: int, log=print):
+    """(ảnh BGRA, (tipx, tipy)) hoặc None nếu «Ẩn bàn tay»."""
+    if hand_id == "hide":
+        return None
+    try:
+        cfg = json.load(open(os.path.join(HANDS_DIR, "hands.json"), encoding="utf-8"))
+    except Exception:
+        cfg = {}
+    p = os.path.join(HANDS_DIR, "%s.png" % hand_id)
+    if hand_id and os.path.isfile(p):
+        im = cv2.imdecode(np.fromfile(p, np.uint8), cv2.IMREAD_UNCHANGED)
+        if im is not None and im.ndim == 3 and im.shape[2] == 4:
+            info = cfg.get(hand_id) or {}
+            tip = info.get("tip") or [0, im.shape[0] - 1]
+            k = float(info.get("cao") or 0.45) * cao_khung / im.shape[0]
+            im = cv2.resize(im, (max(1, int(im.shape[1] * k)), max(1, int(im.shape[0] * k))),
+                            interpolation=cv2.INTER_AREA)
+            return im, (int(tip[0] * k), int(tip[1] * k))
+    if hand_id:
+        log("ℹ Chưa có ảnh tay «%s» trong scripts/draw_hands — dùng bút chì mặc định." % hand_id)
+    return but_chi_mac_dinh(int(cao_khung * 0.30))
+
+
+def _dan_tay(frame: np.ndarray, tay, xy) -> None:
+    """Dán bàn tay sao cho đầu bút trùng `xy` (cắt phần tràn khung)."""
+    if tay is None or xy is None:
+        return
+    im, (tx, ty) = tay
+    x0, y0 = int(xy[0]) - tx, int(xy[1]) - ty
+    H, W = frame.shape[:2]
+    h, w = im.shape[:2]
+    ax0, ay0, ax1, ay1 = max(0, x0), max(0, y0), min_(W, x0 + w), min_(H, y0 + h)
+    if ax0 >= ax1 or ay0 >= ay1:
+        return
+    phan = im[ay0 - y0:ay1 - y0, ax0 - x0:ax1 - x0]
+    a = phan[:, :, 3:4].astype(np.float32) / 255.0
+    vung = frame[ay0:ay1, ax0:ax1].astype(np.float32)
+    frame[ay0:ay1, ax0:ax1] = (phan[:, :, :3] * a + vung * (1 - a)).astype(np.uint8)
+
+
+# ───────────────────────── phân tích ảnh ─────────────────────────
+
+def mau_nen_anh(img: np.ndarray) -> np.ndarray:
+    """Màu nền của chính ảnh (trung vị viền ngoài) — ảnh nét AI thường nền trắng."""
+    vien = np.concatenate([img[:4].reshape(-1, 3), img[-4:].reshape(-1, 3),
+                           img[:, :4].reshape(-1, 3), img[:, -4:].reshape(-1, 3)])
+    return np.median(vien, axis=0)
+
+
+def mat_tien_canh(img: np.ndarray, nguong: float = 28.0) -> np.ndarray:
+    """Pixel KHÁC nền (0/255) — phần có nội dung."""
+    d = np.abs(img.astype(np.int16) - mau_nen_anh(img).astype(np.int16)).max(axis=2)
+    return (d > nguong).astype(np.uint8) * 255
+
+
+def anh_cuoi(img: np.ndarray, nen: np.ndarray, fg: np.ndarray) -> np.ndarray:
+    """Ảnh hoàn chỉnh trên nền canvas. Ảnh nét AI (nền trắng) → chỉ giữ phần nội
+    dung, nền ảnh đổi sang màu canvas — không để lộ vệt nền trắng khi quét màu.
+    Ảnh chụp (nội dung phủ gần hết khung) → giữ nguyên."""
+    if (fg > 0).mean() > 0.85:
+        return img
+    m = cv2.GaussianBlur(fg, (0, 0), 1.2).astype(np.float32)[:, :, None] / 255.0
+    return (img * m + nen * (1 - m)).astype(np.uint8)
+
+
+def do_net(img: np.ndarray, net_px: int) -> np.ndarray:
+    """Mặt nạ nét: viền (Canny) + nét mực tối có sẵn — ảnh line-art ăn trọn nét gốc."""
+    xam = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    mo = cv2.bilateralFilter(xam, 9, 60, 60)
+    trung_vi = float(np.median(mo))
+    vien = cv2.Canny(mo, int(max(20, 0.55 * trung_vi)), int(min_(255, 1.25 * trung_vi + 40)))
+    toi = (xam < min_(110, trung_vi * 0.55)).astype(np.uint8) * 255   # nét mực đậm
+    net = cv2.bitwise_or(vien, toi)
+    if net_px > 1:
+        net = cv2.dilate(net, np.ones((net_px, net_px), np.uint8))
+    return net
+
+
+def thu_tu_net(net: np.ndarray, huong: str = "left_to_right", toi_da: int = 5000) -> list[np.ndarray]:
+    """Các nét (mảng điểm) theo thứ tự vẽ. Mặc định TRÁI → PHẢI như SuperVeo."""
+    ds, _ = cv2.findContours(net, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    ds = [c.reshape(-1, 2) for c in ds if len(c) >= 6]
+    ds.sort(key=len, reverse=True)
+    ds = ds[:toi_da]
+    if huong == "top_to_bottom":
+        dai = max(1, net.shape[0] // 8)
+        ds.sort(key=lambda c: (int(c[:, 1].min()) // dai, int(c[:, 0].min())))
+    else:
+        cot = max(1, net.shape[1] // 10)       # cột dọc, trong cột thì trên → dưới
+        ds.sort(key=lambda c: (int(c[:, 0].min()) // cot, int(c[:, 1].min())))
+    return ds
+
+
+# ───────────────────────── ghi video ─────────────────────────
+
+class _Ghi:
+    def __init__(self, out_path: str, W: int, H: int, fps: int, tay):
+        ff = shutil.which("ffmpeg")
+        if not ff:
+            raise RuntimeError("Máy chưa có ffmpeg")
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        self.out, self.tam, self.tay = out_path, out_path + ".tmp.mp4", tay
+        self.p = subprocess.Popen(
+            [ff, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "%dx%d" % (W, H),
+             "-r", str(fps), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart", self.tam],
+            stdin=subprocess.PIPE, creationflags=_KHONG_CUA_SO)
+
+    def __call__(self, frame, xy=None, tay="mac_dinh"):
+        tay = self.tay if tay == "mac_dinh" else tay
+        if xy is not None and tay is not None:
+            frame = frame.copy()
+            _dan_tay(frame, tay, xy)
+        self.p.stdin.write(np.ascontiguousarray(frame).tobytes())
+
+    def xong(self):
+        self.p.stdin.close()
+        if self.p.wait(timeout=900) != 0:
+            raise RuntimeError("ffmpeg lỗi khi ghép video vẽ tay")
+        os.replace(self.tam, self.out)
+
+    def huy(self):
+        try:
+            self.p.kill()
+        except Exception:
+            pass
+        if os.path.exists(self.tam):
+            os.remove(self.tam)
+
+
+# ───────────────────────── 1+2: stroke_reveal / outline_fill ─────────────────
+
+def _ve_net(ghi, img, nen, net, cac_net, n_frame, net_px, lo_goc: bool):
+    """Lộ dần từng nét. lo_goc=True: lộ ĐÚNG pixel gốc (stroke_reveal);
+    False: vẽ nét mực tương phản nền (outline_fill)."""
+    H, W = img.shape[:2]
+    lo = np.zeros((H, W), np.uint8)
+    if lo_goc:
+        lop = img          # img ở đây đã là anh_cuoi (xem render)
+    else:
+        lop = nen.copy()
+        lop[net > 0] = (30, 30, 30) if nen[0, 0].sum() > 200 else (235, 235, 235)
+    tong = sum(len(c) for c in cac_net) or 1
+    i_net = i_diem = da = 0
+    # Nét dày bị findContours trả về MÉP (trong + ngoài) — bút phải phủ đủ dày,
+    # kẻo nét lộ ra thành hai đường mảnh rỗng ruột.
+    day = max(6, 2 * int(net_px) + 8)
+    xy = None
+    for k in range(n_frame):
+        dich = int(tong * (k + 1) / n_frame)
+        while da < dich and i_net < len(cac_net):
+            c = cac_net[i_net]
+            lay = min_(len(c) - i_diem, dich - da)
+            doan = c[max(0, i_diem - 1):i_diem + lay]
+            if len(doan) >= 2:
+                cv2.polylines(lo, [doan.reshape(-1, 1, 2)], False, 255, day)
+            if len(doan):
+                xy = (int(doan[-1][0]), int(doan[-1][1]))
+            i_diem += lay
+            da += lay
+            if i_diem >= len(c):
+                i_net, i_diem = i_net + 1, 0
+        ghi(np.where((lo[:, :, None] > 0) & (net[:, :, None] > 0), lop, nen), xy)
+    return np.where(net[:, :, None] > 0, lop, nen)
+
+
+def _to_mau(ghi, img, khung_net, fg, n_frame, kieu):
+    """Lộ phần màu còn lại. contour-wipe: quét dọc trái → phải, mép mềm, bút
+    chạy theo mép quét. brush-reveal: cọ zig-zag theo dải ngang."""
+    H, W = img.shape[:2]
+    if kieu == "brush-reveal":
+        mat = np.zeros((H, W), np.uint8)
+        so_dai = 6
+        cao_dai = int(np.ceil(H / so_dai))
+        co = int(cao_dai * 1.25) + 2
+        tong, truoc, xy = so_dai * W, 0, None
+        for k in range(n_frame):
+            toi = int(tong * (k + 1) / n_frame)
+            for d in range(truoc // W, min_(so_dai, toi // W + 1)):
+                y = int(cao_dai * (d + 0.5))
+                x0, x1 = (0, W) if d % 2 == 0 else (W, 0)
+                bd = max(truoc, d * W) - d * W
+                kt = min_(toi, (d + 1) * W) - d * W
+                if kt <= bd:
+                    continue
+                xa, xb = x0 + (x1 - x0) * bd / W, x0 + (x1 - x0) * kt / W
+                cv2.line(mat, (int(xa), y), (int(xb), y), 255, co)
+                xy = (int(xb), y)
+            truoc = toi
+            m = cv2.GaussianBlur(mat, (0, 0), 6).astype(np.float32)[:, :, None] / 255.0
+            ghi((img * m + khung_net * (1 - m)).astype(np.uint8), xy)
+        return
+    # contour-wipe (mặc định SuperVeo)
+    mem = max(8, W // 40)
+    cot_y = np.arange(H)
+    for k in range(n_frame):
+        x = int((W + mem) * (k + 1) / n_frame) - mem
+        ramp = np.clip((x - np.arange(W)) / float(mem), 0, 1).astype(np.float32)
+        m = ramp[None, :, None]
+        f = (img * m + khung_net * (1 - m)).astype(np.uint8)
+        xc = min_(W - 1, max(0, x))
+        cot = fg[:, xc] > 0
+        y = int(cot_y[cot].mean()) if cot.any() else H // 2
+        ghi(f, (xc, y))
+
+
+# ───────────────────────── 3: object_place ─────────────────────────
+
+def _vat_the(img: np.ndarray, toi_da: int = 14):
+    """Tách vật thể (vùng khác nền, liền nhau). Trả [(mask, bbox)], xếp xa → gần."""
+    fg = mat_tien_canh(img)
+    H, W = fg.shape
+    # Nét mảnh (đường đất, dây…) hay nối các vật thành một khối → ăn mòn để bẻ
+    # chúng, gán nhãn phần «lõi», rồi trả mỗi pixel nội dung về lõi gần nhất.
+    k = max(5, min_(H, W) // 90)
+    loi = cv2.erode(fg, np.ones((k * 2 + 1, k * 2 + 1), np.uint8))
+    loi = cv2.morphologyEx(loi, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8))
+    n, nhan_loi, stats, _ = cv2.connectedComponentsWithStats(loi, 8)
+    nen_le = np.zeros_like(fg)
+    if n <= 1:
+        nhan = (fg > 0).astype(np.int32)
+        n = 2
+        stats = np.array([[0, 0, W, H, 0], [0, 0, W, H, int((fg > 0).sum())]])
+    else:
+        xa, gan = cv2.distanceTransformWithLabels((loi == 0).astype(np.uint8), cv2.DIST_L2, 5,
+                                                  labelType=cv2.DIST_LABEL_PIXEL)
+        ys, xs = np.nonzero(loi)
+        bang = np.zeros(gan.max() + 1, np.int32)
+        bang[gan[ys, xs]] = nhan_loi[ys, xs]
+        # Nét mảnh nằm XA mọi lõi (đường đất, khung…) không thuộc vật nào —
+        # gom thành lớp nền, hiện đầu tiên. Gán bừa vào vật gần nhất thì mặt
+        # trời kéo theo cả mẩu đường đất.
+        xa_qua = (xa > k * 3) & (fg > 0)
+        nen_le[xa_qua] = 255
+        nhan = np.where((fg > 0) & ~xa_qua, bang[gan], 0)
+    ds = []
+    for i in range(1, n):
+        m = (nhan == i).astype(np.uint8) * 255
+        s = int(cv2.countNonZero(m))
+        if s < H * W * 0.0015:
+            nen_le |= m
+            continue
+        x, y, w, h = cv2.boundingRect(m)
+        lx, ly, lw, lh = (int(v) for v in stats[i][:4])
+        ds.append((m, (x, y, w, h), s, ly + lh))
+    ds.sort(key=lambda t: -t[2])
+    for t in ds[toi_da:]:
+        nen_le |= t[0]
+    ds = ds[:toi_da]
+    # «back_to_front»: lõi có đáy cao hơn (xa, trên trời) trước, thấp hơn (gần) sau
+    ds.sort(key=lambda t: t[3])
+    return [(m, b) for m, b, _, _ in ds], fg, nen_le
+
+
+def _dat_vat(ghi, img, nen, n_frame, tay):
+    H, W = img.shape[:2]
+    vat, fg, nen_le = _vat_the(img)
+    if not vat:
+        for k in range(n_frame):
+            a = (k + 1) / n_frame
+            ghi(cv2.addWeighted(nen, 1 - a, img, a, 0), None)
+        return
+    nen_hien = nen.copy()
+    # lớp nền (nét lẻ) hiện mờ trong ~10% thời gian đầu
+    n_nen = max(1, n_frame // 10) if nen_le.any() else 0
+    m_nen = nen_le[:, :, None] > 0
+    for k in range(n_nen):
+        a = (k + 1) / n_nen
+        ghi(np.where(m_nen, cv2.addWeighted(nen, 1 - a, img, a, 0), nen_hien), None)
+    if n_nen:
+        nen_hien = np.where(m_nen, img, nen_hien)
+    n_frame = max(len(vat), n_frame - n_nen)
+    moi = max(1, n_frame // len(vat))
+    for i, (m, (x, y, w, h)) in enumerate(vat):
+        so = moi if i < len(vat) - 1 else n_frame - moi * (len(vat) - 1)
+        # trượt vào từ mép gần nhất
+        cx, cy = x + w / 2, y + h / 2
+        trai, phai, tren, duoi = cx, W - cx, cy, H - cy
+        gan = min(trai, phai, tren, duoi)
+        dx, dy = ((-(x + w), 0) if gan == trai else (W - x, 0) if gan == phai
+                  else (0, -(y + h)) if gan == tren else (0, H - y))
+        m3 = m[:, :, None] > 0
+        for k in range(max(1, so)):
+            t = (k + 1) / max(1, so)
+            e = 1 - (1 - min_(1.0, t * 1.15)) ** 3          # ease-out, dừng sớm một nhịp
+            ox, oy = int(dx * (1 - e)), int(dy * (1 - e))
+            M = np.float32([[1, 0, ox], [0, 1, oy]])
+            vat_dich = cv2.warpAffine(img, M, (W, H), borderValue=0)
+            m_dich = cv2.warpAffine(m, M, (W, H), borderValue=0)[:, :, None] > 0
+            f = np.where(m_dich, vat_dich, nen_hien)
+            ghi(f, (int(cx + ox), int(y + oy + h * 0.15)))
+        nen_hien = np.where(m3, img, nen_hien)
+    # phần lẻ chưa thuộc vật nào hiện mờ vào cuối
+    con_lai = (fg > 0)[:, :, None]
+    ghi(np.where(con_lai, img, nen_hien), None)
+
+
+# ───────────────────────── dựng video ─────────────────────────
+
+def render(image_path: str, out_path: str = "", *, draw_sec: float = 5.0, hold_sec: float = 0.0,
+           fps: int = 30, stroke_px: int = 4, ink_ratio: float = 0.8,
+           color_mode: str = "contour-wipe", renderer: str = "auto", bg: str = "cream",
+           bg_color: str = MAU_NEN_SV, hand_id: str = "", dai_max: int = 1920, log=print) -> str:
+    """renderer: stroke_reveal | outline_fill | object_place | auto (theo bàn tay:
+    tay «place/push/drag» → object_place, còn lại → stroke_reveal)."""
+    img = _khung(_doc_anh(image_path), dai_max)
+    H, W = img.shape[:2]
+    out_path = out_path or (os.path.splitext(image_path)[0] + "_draw.mp4")
+    mau_nen = NEN.get(bg, NEN["cream"])
+    if bg_color and bg_color.startswith("#") and len(bg_color) == 7:
+        r, g, b = (int(bg_color[i:i + 2], 16) for i in (1, 3, 5))
+        mau_nen = (b, g, r)
+    nen = np.full_like(img, mau_nen)
+    color_mode = {"contour": "contour-wipe", "brush": "brush-reveal"}.get(color_mode, color_mode)
+    if renderer == "auto":
+        renderer = ("object_place" if any(k in (hand_id or "") for k in ("place", "push", "drag"))
+                    else "stroke_reveal")
+    tay = nap_ban_tay(hand_id, H, log)
+    fg = mat_tien_canh(img)
+    goc = img
+    img = anh_cuoi(img, nen, fg)
+
+    n_ve = max(1, int(round(draw_sec * fps)))
+    n_giu = int(round(max(0.0, hold_sec) * fps))
+    ink_ratio = min_(0.95, max(0.05, float(ink_ratio)))
+    ghi = _Ghi(out_path, W, H, fps, tay)
+    try:
+        if renderer == "object_place":
+            log("✍ Vẽ tay %dx%d · object_place (kéo vật vào, xa → gần) · %ss + giữ %ss" % (
+                W, H, draw_sec, hold_sec))
+            _dat_vat(ghi, goc, nen, n_ve, tay)
+        else:
+            net = do_net(goc, max(1, int(stroke_px)))
+            cac_net = thu_tu_net(net)
+            n_net = max(1, int(n_ve * ink_ratio))
+            log("✍ Vẽ tay %dx%d · %s · %d nét trái→phải · %ss (%d%% nét) · tô %s · giữ %ss" % (
+                W, H, renderer, len(cac_net), draw_sec, int(ink_ratio * 100), color_mode, hold_sec))
+            khung_net = _ve_net(ghi, img, nen, net, cac_net, n_net, stroke_px,
+                                lo_goc=(renderer != "outline_fill"))
+            _to_mau(ghi, img, khung_net, fg, max(1, n_ve - n_net), color_mode)
+        for _ in range(max(1, n_giu)):
+            ghi(img, None)
+        ghi.xong()
+    except Exception:
+        ghi.huy()
+        raise
+    log("✅ Vẽ tay xong → %s" % out_path)
+    return out_path
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+    render(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "")
