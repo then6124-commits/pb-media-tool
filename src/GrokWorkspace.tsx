@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { api, baseName, type BridgeJob, dirName, errText, fileUrl, openFolder, pickFiles as pickPaths, pickFolder, useJobs } from './bridge'
 
 type GrokView = 'studio' | 'profiles'
 type GrokMode =
@@ -14,6 +15,9 @@ type QueueItem = {
   prompt: string
   profile: string
   segments?: number
+  image?: string
+  refs?: string[]
+  steps?: string[]
 }
 
 type ResultItem = {
@@ -21,16 +25,35 @@ type ResultItem = {
   prompt: string
   status: 'pending' | 'done' | 'error'
   mode: GrokMode
+  path?: string
+  err?: string
+  src?: QueueItem
 }
+
+type JobItem = { id: number; status: 'cho' | 'dang_chay' | 'xong' | 'loi'; path: string; msg: string }
 
 type ProfileRow = {
   id: number
   name: string
   slug: string
-  status: 'valid' | 'invalid' | 'testing'
+  status: 'valid' | 'invalid' | 'testing' | 'untested'
   addon: string
   createdAt: string
   selected: boolean
+}
+
+type BridgeProfile = { id: number; name: string; slug: string; status: ProfileRow['status']; created: string }
+
+function toRows(ds: BridgeProfile[], prev: ProfileRow[]): ProfileRow[] {
+  return ds.map((p) => ({
+    id: p.id,
+    name: p.name,
+    slug: p.slug,
+    status: p.status,
+    addon: 'xAI API',
+    createdAt: p.created,
+    selected: prev.find((x) => x.id === p.id)?.selected || false,
+  }))
 }
 
 type ExtendStep = {
@@ -48,7 +71,6 @@ const MODES: GrokMode[] = [
 ]
 
 const LS_THEME = 'pb.grok.theme'
-const LS_PROFILES = 'pb.grok.profiles'
 
 function loadTheme(): 'light' | 'dark' {
   try {
@@ -58,47 +80,6 @@ function loadTheme(): 'light' | 'dark' {
     /* ignore */
   }
   return 'light'
-}
-
-function defaultProfiles(): ProfileRow[] {
-  return [
-    {
-      id: 1,
-      name: 'Profile 1',
-      slug: 'grok_17910…gmc',
-      status: 'valid',
-      addon: 'Chưa kích hoạt',
-      createdAt: '12:56:17 4/10/2026',
-      selected: false,
-    },
-  ]
-}
-
-function loadProfiles(): ProfileRow[] {
-  try {
-    const raw = localStorage.getItem(LS_PROFILES)
-    if (raw) {
-      const parsed = JSON.parse(raw) as ProfileRow[]
-      if (Array.isArray(parsed) && parsed.length) return parsed
-    }
-  } catch {
-    /* ignore */
-  }
-  return defaultProfiles()
-}
-
-function saveProfiles(rows: ProfileRow[]) {
-  try {
-    localStorage.setItem(LS_PROFILES, JSON.stringify(rows))
-  } catch {
-    /* ignore */
-  }
-}
-
-function nowStamp() {
-  const d = new Date()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`
 }
 
 export default function GrokWorkspace() {
@@ -111,7 +92,7 @@ export default function GrokWorkspace() {
   const [duration, setDuration] = useState('10s')
   const [threads, setThreads] = useState(4)
   const [prompt, setPrompt] = useState('')
-  const [profileId, setProfileId] = useState(1)
+  const [profileId, setProfileId] = useState(0)
   const [images, setImages] = useState<string[]>([])
   const [refImages, setRefImages] = useState<string[]>([])
   const [sourceImage, setSourceImage] = useState<string | null>(null)
@@ -124,12 +105,16 @@ export default function GrokWorkspace() {
   const [results, setResults] = useState<ResultItem[]>([])
   const [selectedResults, setSelectedResults] = useState<number[]>([])
   const [toast, setToast] = useState<string | null>(null)
-  const [profiles, setProfiles] = useState<ProfileRow[]>(loadProfiles)
+  const [profiles, setProfiles] = useState<ProfileRow[]>([])
+  const [manualName, setManualName] = useState('')
+  const [manualKey, setManualKey] = useState('')
+  const [jobIds, setJobIds] = useState<string[]>([])
+  const jobs = useJobs(['grok'])
   const [addOpen, setAddOpen] = useState(false)
   const [addTab, setAddTab] = useState<'manual' | 'batch'>('manual')
   const [batchText, setBatchText] = useState('')
   const [consoleOpen, setConsoleOpen] = useState(false)
-  const [logs, setLogs] = useState<string[]>(['[mock] Grok Studio sẵn sàng'])
+  const [logs, setLogs] = useState<string[]>(['Grok Studio sẵn sàng — xAI API'])
 
   useEffect(() => {
     try {
@@ -139,9 +124,39 @@ export default function GrokWorkspace() {
     }
   }, [theme])
 
+  async function profileAction(body: Record<string, unknown>) {
+    try {
+      const r = await api<{ profiles: BridgeProfile[] }>('/api/grok/profiles', body)
+      setProfiles((prev) => toRows(r.profiles, prev))
+      if (r.profiles.length && !r.profiles.some((p) => p.id === profileId)) setProfileId(r.profiles[0].id)
+      return true
+    } catch (e) {
+      flash(errText(e))
+      return false
+    }
+  }
+
   useEffect(() => {
-    saveProfiles(profiles)
-  }, [profiles])
+    void profileAction({})
+    // chỉ nạp một lần
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Tiến độ việc nền → danh sách kết quả
+  useEffect(() => {
+    const mine = jobs.filter((j) => jobIds.includes(j.id))
+    if (!mine.length) return
+    const items = mine.flatMap((j) => ((j as BridgeJob & { items?: JobItem[] }).items || []))
+    if (!items.length) return
+    setResults((prev) =>
+      prev.map((r) => {
+        const it = items.find((x) => x.id === r.id)
+        if (!it) return r
+        const status = it.status === 'xong' ? 'done' : it.status === 'loi' ? 'error' : 'pending'
+        return { ...r, status, path: it.path || r.path, err: it.msg || undefined }
+      }),
+    )
+  }, [jobs, jobIds])
 
   useEffect(() => {
     if (!toast) return
@@ -150,7 +165,7 @@ export default function GrokWorkspace() {
   }, [toast])
 
   const activeProfile = profiles.find((p) => p.id === profileId) || profiles[0]
-  const profileName = activeProfile?.name || 'Profile 1'
+  const profileName = activeProfile?.name || '(chưa có profile)'
 
   const promptLines = useMemo(
     () =>
@@ -204,42 +219,46 @@ export default function GrokWorkspace() {
     log(msg)
   }
 
-  function pickFiles(multi: boolean, folderHint?: boolean): Promise<string[]> {
-    return new Promise((resolve) => {
-      const input = document.createElement('input')
-      input.type = 'file'
-      input.accept = 'image/*'
-      input.multiple = multi
-      if (folderHint) {
-        input.setAttribute('webkitdirectory', '')
-      }
-      input.onchange = () => {
-        const files = Array.from(input.files || [])
-        resolve(files.map((f) => f.name))
-      }
-      input.click()
-    })
+  async function choose(multi: boolean): Promise<string[]> {
+    try {
+      return await pickPaths('anh', multi)
+    } catch (e) {
+      flash(errText(e))
+      return []
+    }
   }
 
-  async function onPickImages(folder = false) {
-    const names = await pickFiles(true, folder)
-    if (!names.length) return
-    setImages((prev) => [...prev, ...names])
-    flash(`Đã chọn ${names.length} ảnh (mock)`)
+  async function onPickImages() {
+    const paths = await choose(true)
+    if (!paths.length) return
+    setImages((prev) => [...prev, ...paths])
+    flash(`Đã chọn ${paths.length} ảnh`)
+  }
+
+  async function onPickFolder() {
+    try {
+      const dir = await pickFolder()
+      if (!dir) return
+      const r = await api<{ items: { path: string }[] }>('/api/mini/list-images', { folder: dir })
+      setImages((prev) => [...prev, ...r.items.map((x) => x.path)])
+      flash(`Đã thêm ${r.items.length} ảnh từ thư mục`)
+    } catch (e) {
+      flash(errText(e))
+    }
   }
 
   async function onPickRef() {
-    const names = await pickFiles(true)
-    if (!names.length) return
-    setRefImages((prev) => [...prev, ...names])
-    flash(`Đã thêm ${names.length} ảnh tham chiếu`)
+    const paths = await choose(true)
+    if (!paths.length) return
+    setRefImages((prev) => [...prev, ...paths])
+    flash(`Đã thêm ${paths.length} ảnh tham chiếu`)
   }
 
   async function onPickSource() {
-    const names = await pickFiles(false)
-    if (!names.length) return
-    setSourceImage(names[0])
-    flash(`Ảnh nguồn: ${names[0]}`)
+    const [p] = await choose(false)
+    if (!p) return
+    setSourceImage(p)
+    flash(`Ảnh nguồn: ${baseName(p)}`)
   }
 
   function addToQueue() {
@@ -255,6 +274,8 @@ export default function GrokWorkspace() {
         prompt: filled.map((s) => s.prompt.trim()).join(' → '),
         profile: profileName,
         segments: filled.length,
+        steps: filled.map((s) => s.prompt.trim()),
+        image: sourceImage || undefined,
       }
       setQueue((q) => [...q, item])
       flash(`Đã thêm chain ${filled.length} segment vào hàng đợi`)
@@ -270,8 +291,9 @@ export default function GrokWorkspace() {
       const items = images.map((img, i) => ({
         id: Date.now() + i,
         mode,
-        prompt: `${img}: ${lines[i % lines.length]}`,
+        prompt: `${baseName(img)}: ${lines[i % lines.length]}`,
         profile: profileName,
+        image: img,
       }))
       setQueue((q) => [...q, ...items])
       flash(`Đã thêm ${items.length} job ảnh→video`)
@@ -282,18 +304,49 @@ export default function GrokWorkspace() {
       flash('Nhập ít nhất 1 dòng prompt')
       return
     }
-    if ((mode === 'Reference to Video' || mode === 'Text to Image') && !refImages.length) {
-      // still allow — screenshot says optional-ish; soft warn
-      flash('Chưa có ảnh tham chiếu — vẫn thêm mock')
+    if (mode === 'Reference to Video' && !refImages.length) {
+      flash('Reference to Video cần ít nhất 1 ảnh tham chiếu')
+      return
     }
     const items = promptLines.map((line, i) => ({
       id: Date.now() + i,
       mode,
       prompt: line,
       profile: profileName,
+      refs: mode === 'Reference to Video' ? refImages : undefined,
     }))
     setQueue((q) => [...q, ...items])
     flash(`Đã thêm ${items.length} prompt vào hàng đợi`)
+  }
+
+  async function sendBatch(batch: QueueItem[]) {
+    // Gom theo mode — mỗi mode một việc nền
+    const modes = Array.from(new Set(batch.map((q) => q.mode)))
+    for (const m of modes) {
+      const part = batch.filter((q) => q.mode === m)
+      try {
+        const r = await api<{ id: string }>('/api/grok/run', {
+          mode: m,
+          profile_id: profileId,
+          ratio,
+          duration,
+          parallel: threads,
+          items: part.map((q) => ({
+            id: q.id,
+            prompt: q.prompt.replace(/^[^:]*\.(png|jpe?g|webp): /i, ''),
+            image: q.image,
+            refs: q.refs,
+            steps: q.steps,
+          })),
+        })
+        setJobIds((prev) => [...prev, r.id])
+        log(`Gửi ${part.length} việc ${m} → xAI`)
+      } catch (e) {
+        const msg = errText(e)
+        setResults((prev) => prev.map((x) => (part.some((q) => q.id === x.id) ? { ...x, status: 'error', err: msg } : x)))
+        flash(msg)
+      }
+    }
   }
 
   function startGen() {
@@ -301,26 +354,17 @@ export default function GrokWorkspace() {
       flash('Hàng đợi trống')
       return
     }
+    if (!profiles.length) {
+      flash('Chưa có profile — thêm xAI API key ở tab Profiles')
+      return
+    }
     const batch = [...queue]
     setQueue([])
-    const pending: ResultItem[] = batch.map((q) => ({
-      id: q.id,
-      prompt: q.prompt,
-      status: 'pending' as const,
-      mode: q.mode,
-    }))
-    setResults((r) => [...pending, ...r])
-    flash(`Bắt đầu gen ${batch.length} jobs (mock)`)
-    window.setTimeout(() => {
-      setResults((r) =>
-        r.map((item) =>
-          pending.some((p) => p.id === item.id)
-            ? { ...item, status: Math.random() > 0.12 ? 'done' : 'error' }
-            : item,
-        ),
-      )
-      flash('Gen mock hoàn tất')
-    }, 1600)
+    setResults((r) => [
+      ...batch.map((q) => ({ id: q.id, prompt: q.prompt, status: 'pending' as const, mode: q.mode, src: q })),
+      ...r,
+    ])
+    void sendBatch(batch)
   }
 
   function updateStep(id: number, prompt: string) {
@@ -354,40 +398,32 @@ export default function GrokWorkspace() {
   }
 
   function retryFailed() {
-    const failed = results.filter((r) => r.status === 'error')
+    const failed = results.filter((r) => r.status === 'error' && r.src)
     if (!failed.length) {
       flash('Không có job lỗi')
       return
     }
-    setResults((r) => r.map((x) => (x.status === 'error' ? { ...x, status: 'pending' } : x)))
-    window.setTimeout(() => {
-      setResults((r) => r.map((x) => (x.status === 'pending' ? { ...x, status: 'done' } : x)))
-      flash(`Retry ${failed.length} job lỗi → xong`)
-    }, 900)
+    setResults((r) => r.map((x) => (failed.some((f) => f.id === x.id) ? { ...x, status: 'pending', err: undefined } : x)))
+    void sendBatch(failed.map((f) => f.src!))
   }
 
   function testProfile(id: number) {
     setProfiles((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'testing' } : p)))
-    flash(`Đang test profile #${id}…`)
-    window.setTimeout(() => {
-      setProfiles((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, status: Math.random() > 0.15 ? 'valid' : 'invalid' } : p)),
-      )
-      flash(`Test profile #${id} xong`)
-    }, 800)
+    void profileAction({ action: 'test', ids: [id] })
   }
 
   function testAll() {
-    profiles.forEach((p) => testProfile(p.id))
+    setProfiles((prev) => prev.map((p) => ({ ...p, status: 'testing' })))
+    void profileAction({ action: 'test' })
   }
 
-  function relogin(id: number) {
-    flash(`Re-login profile #${id} (mock — mở browser giả)`)
+  function renameProfile(p: ProfileRow) {
+    const name = window.prompt('Tên profile', p.name)
+    if (name && name.trim()) void profileAction({ action: 'rename', id: p.id, name: name.trim() })
   }
 
   function deleteProfile(id: number) {
-    setProfiles((prev) => prev.filter((p) => p.id !== id))
-    flash(`Đã xóa profile #${id}`)
+    void profileAction({ action: 'delete', ids: [id] })
   }
 
   function selectAllProfiles(on: boolean) {
@@ -395,57 +431,37 @@ export default function GrokWorkspace() {
   }
 
   function deleteSelectedProfiles() {
-    const n = profiles.filter((p) => p.selected).length
-    if (!n) {
+    const ids = profiles.filter((p) => p.selected).map((p) => p.id)
+    if (!ids.length) {
       flash('Chưa chọn profile')
       return
     }
-    setProfiles((prev) => prev.filter((p) => !p.selected))
-    flash(`Đã xóa ${n} profile`)
+    void profileAction({ action: 'delete', ids })
   }
 
-  function addManualProfile() {
-    const id = Date.now()
-    const row: ProfileRow = {
-      id,
-      name: `Profile ${profiles.length + 1}`,
-      slug: `grok_${String(id).slice(-5)}…gmc`,
-      status: 'valid',
-      addon: 'Chưa kích hoạt',
-      createdAt: nowStamp(),
-      selected: false,
-    }
-    setProfiles((prev) => [...prev, row])
-    setProfileId(id)
-    setAddOpen(false)
-    flash('Đã mở browser mock & thêm profile (đăng nhập thủ công)')
-  }
-
-  function addBatchProfiles() {
-    const lines = batchText
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-    if (!lines.length) {
-      flash('Dán danh sách account (mỗi dòng 1)')
+  async function addManualProfile() {
+    if (!manualKey.trim()) {
+      flash('Dán xAI API key (console.x.ai)')
       return
     }
-    const rows: ProfileRow[] = lines.map((line, i) => {
-      const name = line.split(/[|:\s]/)[0] || `Batch ${i + 1}`
-      return {
-        id: Date.now() + i,
-        name,
-        slug: `grok_batch_${i + 1}…gmc`,
-        status: 'valid' as const,
-        addon: 'Chưa kích hoạt',
-        createdAt: nowStamp(),
-        selected: false,
-      }
-    })
-    setProfiles((prev) => [...prev, ...rows])
-    setBatchText('')
-    setAddOpen(false)
-    flash(`Auto Batch: thêm ${rows.length} profile mock`)
+    if (await profileAction({ action: 'add', keys: `${manualName.trim()}|${manualKey.trim()}` })) {
+      setManualKey('')
+      setManualName('')
+      setAddOpen(false)
+      flash('Đã thêm profile — bấm Test để kiểm tra key')
+    }
+  }
+
+  async function addBatchProfiles() {
+    if (!batchText.trim()) {
+      flash('Dán danh sách key (mỗi dòng: tên|key hoặc chỉ key)')
+      return
+    }
+    if (await profileAction({ action: 'add', keys: batchText })) {
+      setBatchText('')
+      setAddOpen(false)
+      flash('Đã thêm profile')
+    }
   }
 
   return (
@@ -610,18 +626,18 @@ export default function GrokWorkspace() {
                 </div>
                 <p className="grok-hint">Upload ảnh và nhập prompt cho từng ảnh</p>
                 <div className="grok-two-btn">
-                  <button type="button" onClick={() => onPickImages(false)}>
+                  <button type="button" onClick={() => void onPickImages()}>
                     ☁ Chọn ảnh
                   </button>
-                  <button type="button" onClick={() => onPickImages(true)}>
+                  <button type="button" onClick={() => void onPickFolder()}>
                     📁 Chọn folder
                   </button>
                 </div>
                 {images.length > 0 && (
                   <ul className="grok-file-list">
                     {images.map((n) => (
-                      <li key={n}>
-                        {n}
+                      <li key={n} title={n}>
+                        {baseName(n)}
                         <button type="button" onClick={() => setImages((prev) => prev.filter((x) => x !== n))}>
                           ×
                         </button>
@@ -640,12 +656,14 @@ export default function GrokWorkspace() {
 
             {(mode === 'Text to Image' || mode === 'Reference to Video') && (
               <div className="grok-block">
+                {mode === 'Reference to Video' && (
+                  <>
                 <div className="grok-block-head">
-                  <span className="grok-label">ẢNH THAM CHIẾU</span>
+                  <span className="grok-label">ẢNH THAM CHIẾU (TỐI ĐA 7)</span>
                   <span className="grok-count-badge">{refImages.length}</span>
                 </div>
                 <div className="grok-two-btn">
-                  <button type="button" onClick={onPickRef}>
+                  <button type="button" onClick={() => void onPickRef()}>
                     ☁ Chọn ảnh
                   </button>
                   <button type="button" onClick={() => setRefImages([])}>
@@ -655,9 +673,13 @@ export default function GrokWorkspace() {
                 {refImages.length > 0 && (
                   <ul className="grok-file-list">
                     {refImages.map((n) => (
-                      <li key={n}>{n}</li>
+                      <li key={n} title={n}>
+                        {baseName(n)}
+                      </li>
                     ))}
                   </ul>
+                )}
+                  </>
                 )}
                 <textarea
                   className="grok-prompt"
@@ -675,8 +697,8 @@ export default function GrokWorkspace() {
             {mode === 'Video Extend' && (
               <div className="grok-block">
                 <div className="grok-label">ẢNH NGUỒN (TUỲ CHỌN · SEGMENT ĐẦU DÙNG I2V)</div>
-                <button type="button" className="grok-dashed-btn" onClick={onPickSource}>
-                  {sourceImage ? `🖼 ${sourceImage}` : '📷 Chọn ảnh từ máy'}
+                <button type="button" className="grok-dashed-btn" onClick={() => void onPickSource()}>
+                  {sourceImage ? `🖼 ${baseName(sourceImage)}` : '📷 Chọn ảnh từ máy'}
                 </button>
                 {sourceImage && (
                   <button type="button" className="grok-linkish" onClick={() => setSourceImage(null)}>
@@ -833,11 +855,23 @@ export default function GrokWorkspace() {
                         <div className="grok-result-prompt">{r.prompt}</div>
                         <div className="grok-result-meta">
                           {r.mode}
-                          <span className={`grok-badge ${r.status}`}>
+                          <span className={`grok-badge ${r.status}`} title={r.err}>
                             {r.status === 'pending' ? 'Đang chạy' : r.status === 'done' ? 'Xong' : 'Lỗi'}
                           </span>
+                          {r.path && (
+                            <button type="button" className="grok-linkish" onClick={() => openFolder(dirName(r.path!))}>
+                              📂
+                            </button>
+                          )}
                         </div>
+                        {r.err && <div className="grok-result-err">{r.err}</div>}
                       </div>
+                      {r.path &&
+                        (/\.png$|\.jpe?g$|\.webp$/i.test(r.path) ? (
+                          <img className="grok-result-media" src={fileUrl(r.path)} alt="" />
+                        ) : (
+                          <video className="grok-result-media" src={fileUrl(r.path)} controls preload="metadata" />
+                        ))}
                     </li>
                   ))}
                 </ul>
@@ -903,19 +937,25 @@ export default function GrokWorkspace() {
                       <div className="grok-acct-slug">{p.slug}</div>
                     </td>
                     <td>
-                      <span className={`grok-status-dot ${p.status === 'valid' ? 'ok' : p.status === 'testing' ? 'run' : 'bad'}`} />
-                      {p.status === 'valid' ? 'Hợp lệ' : p.status === 'testing' ? 'Đang test' : 'Không hợp lệ'}
+                      <span className={`grok-status-dot ${p.status === 'valid' ? 'ok' : p.status === 'invalid' ? 'bad' : 'run'}`} />
+                      {p.status === 'valid'
+                        ? 'Hợp lệ'
+                        : p.status === 'testing'
+                          ? 'Đang test'
+                          : p.status === 'untested'
+                            ? 'Chưa test'
+                            : 'Không hợp lệ'}
                     </td>
                     <td>
                       <span className="grok-addon">{p.addon}</span>
                     </td>
                     <td>{p.createdAt}</td>
                     <td className="grok-row-actions">
-                      <button type="button" title="Sửa" onClick={() => flash(`Sửa ${p.name} (mock)`)}>
+                      <button type="button" title="Đổi tên" onClick={() => renameProfile(p)}>
                         ✎
                       </button>
-                      <button type="button" className="grok-btn-dark" onClick={() => relogin(p.id)}>
-                        Re-login
+                      <button type="button" className="grok-btn-dark" onClick={() => setProfileId(p.id)}>
+                        {profileId === p.id ? '✓ Đang dùng' : 'Dùng'}
                       </button>
                       <button type="button" className="grok-outline-blue" onClick={() => testProfile(p.id)}>
                         Test
@@ -929,7 +969,7 @@ export default function GrokWorkspace() {
                 {!profiles.length && (
                   <tr>
                     <td colSpan={6} className="grok-empty-cell">
-                      Chưa có profile. Bấm + Thêm profile.
+                      Chưa có profile. Bấm + Thêm profile và dán xAI API key (console.x.ai).
                     </td>
                   </tr>
                 )}
@@ -979,22 +1019,34 @@ export default function GrokWorkspace() {
               </button>
             </div>
             {addTab === 'manual' ? (
-              <button type="button" className="grok-manual-card" onClick={addManualProfile}>
-                <span className="grok-manual-plus">+</span>
-                <span>
-                  <strong>Mở Browser & Đăng nhập</strong>
-                  <small>Script mở Chrome, bạn tự đăng nhập X.com / Grok.</small>
-                </span>
-              </button>
+              <div className="grok-batch-box">
+                <p className="grok-hint">Mỗi profile là một xAI API key — tạo ở console.x.ai › API Keys.</p>
+                <input
+                  className="grok-key-input"
+                  placeholder="Tên profile (tuỳ chọn)"
+                  value={manualName}
+                  onChange={(e) => setManualName(e.target.value)}
+                />
+                <input
+                  className="grok-key-input"
+                  type="password"
+                  placeholder="xai-…"
+                  value={manualKey}
+                  onChange={(e) => setManualKey(e.target.value)}
+                />
+                <button type="button" className="grok-btn-dark wide" onClick={() => void addManualProfile()}>
+                  Thêm profile
+                </button>
+              </div>
             ) : (
               <div className="grok-batch-box">
-                <p className="grok-hint">Mỗi dòng một account (email|pass hoặc cookie) — chỉ UI mock, không login thật.</p>
+                <p className="grok-hint">Mỗi dòng một key: «tên|xai-…» hoặc chỉ «xai-…».</p>
                 <textarea
                   value={batchText}
                   onChange={(e) => setBatchText(e.target.value)}
-                  placeholder="user1@mail.com|pass&#10;user2@mail.com|pass"
+                  placeholder="Main|xai-…&#10;xai-…"
                 />
-                <button type="button" className="grok-btn-dark wide" onClick={addBatchProfiles}>
+                <button type="button" className="grok-btn-dark wide" onClick={() => void addBatchProfiles()}>
                   Thêm batch
                 </button>
               </div>

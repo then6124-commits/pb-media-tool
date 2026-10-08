@@ -1237,8 +1237,9 @@ def chon_file(loai: str = "", goc: str = "") -> list[str]:
         return []
 
 
-def _thu_ra(out_dir: str, con: str) -> str:
-    d = out_dir if (out_dir and os.path.isabs(out_dir)) else os.path.join(OUT_MINI, con)
+def _thu_ra(out_dir: str, con: str, goc: str = "") -> str:
+    """Thư mục ra: đường dẫn người dùng chọn, không thì <goc>/<con> (goc mặc định = MiniApp)."""
+    d = out_dir if (out_dir and os.path.isabs(out_dir)) else os.path.join(goc or OUT_MINI, con)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -1826,7 +1827,7 @@ def voice_lo(d: dict) -> dict:
            "path": "", "dur": 0.0, "msg": ""} for x in d.get("items") or [] if str(x.get("text") or "").strip()]
     if not ds:
         raise RuntimeError("Chưa có đoạn văn nào")
-    out_dir = _thu_ra(str(d.get("out_dir") or ""), os.path.join("Voice", time.strftime("%Y%m%d_%H%M%S")))
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), os.path.join("Voice", time.strftime("%Y%m%d_%H%M%S")), OUT_MAC_DINH)
 
     def viec(v):
         v["items"] = ds
@@ -1899,7 +1900,7 @@ def ghep_video(paths, d: dict) -> dict:
     nhac = str(d.get("music") or "")
     if nhac and not os.path.isfile(nhac):
         raise RuntimeError("Không thấy file nhạc: %s" % nhac)
-    out_dir = _thu_ra(str(d.get("out_dir") or ""), "Ghep_video")
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), "Ghep_video", OUT_MAC_DINH)
     ra = os.path.join(out_dir, "ghep_%s.mp4" % time.strftime("%Y%m%d_%H%M%S"))
 
     def viec(v):
@@ -2478,6 +2479,203 @@ def invideo_cai_whisper() -> dict:
     return _chay_nen("invideo-setup", "faster-whisper", "", viec, "invideo")
 
 
+# ───────────────────────── Grok (xAI API) ─────────────────────────
+#
+# Grok Imagine qua API chính thức của xAI (docs.x.ai): video — POST
+# /v1/videos/generations → request_id → GET /v1/videos/{id} tới khi «done»;
+# ảnh — POST /v1/images/generations. «Profile» của tab Grok = một API key.
+# Video Extend dựng bằng chuỗi image-to-video: khung cuối đoạn trước làm ảnh
+# đầu đoạn sau, rồi nối lại — không phụ thuộc endpoint extend riêng.
+
+OUT_GROK = os.path.join(OUT_MAC_DINH, "Grok")
+XAI = "https://api.x.ai/v1"
+
+
+def _xai_model(loai: str) -> str:
+    cfg = cau_hinh()
+    return str(cfg.get("xai_%s_model" % loai) or os.environ.get("PB_XAI_%s_MODEL" % loai.upper())
+               or ("grok-imagine-video" if loai == "video" else "grok-imagine-image"))
+
+
+def grok_profiles(ds: list | None = None) -> list[dict]:
+    if ds is not None:
+        cau_hinh({"grok_profiles": json.dumps(ds, ensure_ascii=False)})
+    try:
+        return list(json.loads(cau_hinh().get("grok_profiles") or "[]"))
+    except ValueError:
+        return []
+
+
+def _che(p: dict) -> dict:
+    k = str(p.get("key") or "")
+    return {**{x: y for x, y in p.items() if x != "key"},
+            "slug": (k[:8] + "…" + k[-4:]) if len(k) > 14 else "…"}
+
+
+def grok_profile_viec(d: dict) -> list[dict]:
+    ds = grok_profiles()
+    viec = str(d.get("action") or "list")
+    if viec == "add":
+        moi = []
+        for dong in str(d.get("keys") or "").splitlines():
+            dong = dong.strip()
+            if not dong:
+                continue
+            ten, _, key = dong.rpartition("|") if "|" in dong else ("", "", dong)
+            moi.append({"id": int(time.time() * 1000) + len(moi), "name": ten.strip() or "Profile %d" % (len(ds) + len(moi) + 1),
+                        "key": key.strip(), "status": "untested", "created": time.strftime("%H:%M:%S %d/%m/%Y")})
+        ds += moi
+    elif viec == "delete":
+        bo = set(d.get("ids") or [])
+        ds = [p for p in ds if p.get("id") not in bo]
+    elif viec == "rename":
+        for p in ds:
+            if p.get("id") == d.get("id"):
+                p["name"] = str(d.get("name") or p["name"])
+    elif viec == "test":
+        bo = set(d.get("ids") or [p.get("id") for p in ds])
+        for p in ds:
+            if p.get("id") in bo:
+                ma, _raw = _http_json(XAI + "/api-key", None, {"Authorization": "Bearer " + p["key"]}, timeout=30)
+                p["status"] = "valid" if ma == 200 else "invalid"
+    if viec != "list":
+        grok_profiles(ds)
+    return [_che(p) for p in ds]
+
+
+def _data_uri(path: str) -> str:
+    duoi = os.path.splitext(path)[1].lower().lstrip(".")
+    with open(path, "rb") as f:
+        return "data:image/%s;base64,%s" % ({"jpg": "jpeg"}.get(duoi, duoi or "png"),
+                                             base64.b64encode(f.read()).decode())
+
+
+def _xai_video(key: str, body: dict, out: str, v: dict | None = None) -> str:
+    h = {"Authorization": "Bearer " + key}
+    ma, raw = _http_json(XAI + "/videos/generations", body, h, timeout=120)
+    if ma != 200:
+        raise RuntimeError("xAI HTTP %d: %s" % (ma, raw[:200].decode("utf-8", "replace")))
+    rid = json.loads(raw).get("request_id")
+    if not rid:
+        raise RuntimeError("xAI không trả request_id")
+    for _ in range(240):                        # tối đa ~20 phút
+        time.sleep(5)
+        ma, raw = _http_json(XAI + "/videos/" + rid, None, h, timeout=60)
+        if ma != 200:
+            continue
+        data = json.loads(raw)
+        st = data.get("status")
+        if st == "done":
+            url = (data.get("video") or {}).get("url")
+            if not url:
+                raise RuntimeError("xAI xong nhưng không có video.url")
+            return _tai_url(url, out)
+        if st in ("failed", "expired"):
+            raise RuntimeError("xAI: %s %s" % (st, data.get("error") or ""))
+    raise RuntimeError("xAI quá 20 phút chưa xong")
+
+
+def _xai_anh(key: str, prompt: str, ratio: str, out: str) -> str:
+    body = {"model": _xai_model("image"), "prompt": prompt, "n": 1, "response_format": "b64_json"}
+    if ratio:
+        body["aspect_ratio"] = ratio
+    ma, raw = _http_json(XAI + "/images/generations", body, {"Authorization": "Bearer " + key})
+    if ma != 200:
+        raise RuntimeError("xAI HTTP %d: %s" % (ma, raw[:200].decode("utf-8", "replace")))
+    item = (json.loads(raw).get("data") or [{}])[0]
+    if item.get("b64_json"):
+        with open(out, "wb") as f:
+            f.write(base64.b64decode(item["b64_json"]))
+        return out
+    if item.get("url"):
+        return _tai_url(item["url"], out)
+    raise RuntimeError("xAI không trả ảnh")
+
+
+def _khung_cuoi(video: str, out: str) -> str:
+    subprocess.run([_exe("ffmpeg"), "-y", "-v", "error", "-sseof", "-0.1", "-i", video, "-frames:v", "1",
+                    "-update", "1", out], check=True, creationflags=_KHONG_CUA_SO)
+    return out
+
+
+def grok_chay(d: dict) -> dict:
+    mode = str(d.get("mode") or "Text to Video")
+    ds_p = {p["id"]: p for p in grok_profiles()}
+    p = ds_p.get(d.get("profile_id")) or next(iter(ds_p.values()), None)
+    if not p:
+        raise RuntimeError("Chưa có profile (xAI API key) — vào «Profiles» › + Thêm")
+    key = p["key"]
+    items = [{"id": x.get("id"), "prompt": str(x.get("prompt") or "").strip(), "image": str(x.get("image") or ""),
+              "refs": [r for r in x.get("refs") or [] if os.path.isfile(r)], "steps": list(x.get("steps") or []),
+              "status": "cho", "path": "", "msg": ""} for x in d.get("items") or []]
+    if not items:
+        raise RuntimeError("Hàng đợi trống")
+    giay = int(re.sub(r"\D", "", str(d.get("duration") or "6")) or 6)
+    ratio = str(d.get("ratio") or "16:9")
+    out_dir = _thu_ra(str(d.get("out_dir") or ""), time.strftime("%Y%m%d"), OUT_GROK)
+    lo = "%s_%s" % (time.strftime("%H%M%S"), uuid.uuid4().hex[:4])   # tên riêng mỗi lô — khỏi đè nhau
+
+    def mot(i: int, it: dict) -> None:
+        it["status"] = "dang_chay"
+        goc = os.path.join(out_dir, "%s_%02d" % (lo, i))
+        body = {"model": _xai_model("video"), "prompt": it["prompt"], "duration": giay,
+                "aspect_ratio": ratio, "resolution": str(d.get("resolution") or "720p")}
+        try:
+            if mode == "Text to Image":
+                it["path"] = _xai_anh(key, it["prompt"], ratio, goc + ".png")
+            elif mode == "Image to Video":
+                if not os.path.isfile(it["image"]):
+                    raise RuntimeError("Không thấy ảnh: %s" % it["image"])
+                body["image"] = {"url": _data_uri(it["image"])}
+                it["path"] = _xai_video(key, body, goc + ".mp4")
+            elif mode == "Reference to Video":
+                if not it["refs"]:
+                    raise RuntimeError("Reference to Video cần ít nhất 1 ảnh tham chiếu")
+                body["reference_images"] = [{"url": _data_uri(r)} for r in it["refs"][:7]]
+                it["path"] = _xai_video(key, body, goc + ".mp4")
+            elif mode == "Video Extend":
+                doan, anh = [], it["image"] if os.path.isfile(it["image"]) else ""
+                for k, buoc in enumerate([s for s in it["steps"] if str(s).strip()], 1):
+                    it["msg"] = "Đoạn %d/%d…" % (k, len(it["steps"]))
+                    b = dict(body, prompt=str(buoc))
+                    if anh:
+                        b["image"] = {"url": _data_uri(anh)}
+                        b.pop("aspect_ratio", None)
+                    p_doan = _xai_video(key, b, "%s_seg%d.mp4" % (goc, k))
+                    doan.append(p_doan)
+                    anh = _khung_cuoi(p_doan, "%s_seg%d_last.png" % (goc, k))
+                if not doan:
+                    raise RuntimeError("Chain không có đoạn nào")
+                ds_txt = goc + "_list.txt"
+                with open(ds_txt, "w", encoding="utf-8") as f:
+                    f.writelines("file '%s'\n" % x.replace("\\", "/") for x in doan)
+                # Nối lại (dựng lại hình — các đoạn có thể khác thông số mã hoá)
+                subprocess.run([_exe("ffmpeg"), "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", ds_txt,
+                                "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-c:a", "aac", goc + ".mp4"],
+                               check=True, creationflags=_KHONG_CUA_SO)
+                it["path"] = goc + ".mp4"
+            else:
+                it["path"] = _xai_video(key, body, goc + ".mp4")
+            it.update(status="xong", msg="")
+        except Exception as e:
+            it.update(status="loi", msg=str(e)[:300])
+            log("❌ Grok #%d: %s" % (i, e), "LỖI", "grok")
+
+    def viec(v):
+        v["items"] = items
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max(1, min(8, int(d.get("parallel") or 2)))) as tp:
+            list(tp.map(lambda a: mot(*a), enumerate(items, 1)))
+        loi = sum(1 for x in items if x["status"] == "loi")
+        v["msg"] = "Xong %d/%d" % (len(items) - loi, len(items))
+        if loi == len(items):
+            raise RuntimeError(items[0]["msg"])
+        return ""
+
+    log("▶ Grok %s · %d việc · %s" % (mode, len(items), p.get("name")), "INFO", "grok")
+    return _chay_nen("grok", "%s · %s" % (mode, p.get("name")), out_dir, viec, "grok")
+
+
 # ───────────────────────── tiện ích ─────────────────────────
 
 def chon_thu_muc(goc: str = "") -> str:
@@ -2702,6 +2900,9 @@ class XuLy(BaseHTTPRequestHandler):
             if u.path == "/api/pick-files":
                 return self._json(200, {"ok": True, "paths": chon_file(str(d.get("kind") or ""),
                                                                        str(d.get("start") or ""))})
+            if u.path == "/api/mini/list-images":
+                return self._json(200, {"ok": True, "items": [{"path": x} for x in _ds_file(
+                    [str(d.get("folder") or "")], DUOI_ANH)]})
             if u.path == "/api/mini/read-text":
                 return self._json(200, {"ok": True, "text": doc_chu(str(d.get("path") or ""))})
             if u.path == "/api/mini/cut-img":
@@ -2744,6 +2945,10 @@ class XuLy(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "cfg": che,
                                         "gemini": len(gemini_keys_an_toan()),
                                         "eleven": len(eleven_keys())})
+            if u.path == "/api/grok/profiles":
+                return self._json(200, {"ok": True, "profiles": grok_profile_viec(d)})
+            if u.path == "/api/grok/run":
+                return self._json(200, {"ok": True, **grok_chay(d)})
             if u.path == "/api/creator/run":
                 return self._json(200, {"ok": True, **creator_chay(d)})
             if u.path == "/api/invideo/create":
