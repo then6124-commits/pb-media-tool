@@ -153,7 +153,12 @@ export default function MuseWorkspace() {
     }
   })
   const [hideChrome, setHideChrome] = useState(() => loadJson(LS_HIDE, false))
-  const [refs, setRefs] = useState<RefImage[]>(() => loadJson(LS_REFS, [] as RefImage[]))
+  const [refs, setRefs] = useState<RefImage[]>(() => {
+    const seen = new Set<string>()
+    return loadJson(LS_REFS, [] as RefImage[])
+      .filter((r) => r && r.path && !seen.has(r.path) && (seen.add(r.path), true))
+      .map((r, i) => ({ ...r, id: i + 1 }))
+  })
   const [queueTab, setQueueTab] = useState<QueueTab>('all')
   const [search, setSearch] = useState('')
   const [collapsed, setCollapsed] = useState(() => loadJson(LS_COLLAPSED, false))

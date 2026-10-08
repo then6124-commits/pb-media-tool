@@ -30,6 +30,19 @@ TOOL_DIR = os.environ.get("PB_TOOL_DIR") or r"C:\Users\Admin\Downloads\PB_MEDIA_
 PORT = int(os.environ.get("PB_BRIDGE_PORT") or 1431)
 LOCAL = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
 REF_DIR = os.path.join(LOCAL, "PBMedia", "pb_bridge_refs")
+
+
+def _ver_file() -> str:
+    """Phiên bản = sha1 nội dung file này — vite so khớp để tắt cầu nối cũ còn sót lại."""
+    import hashlib
+    try:
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha1(f.read()).hexdigest()[:12]
+    except OSError:
+        return ""
+
+
+BRIDGE_VER = _ver_file()
 OUT_MAC_DINH = os.path.join(os.path.expanduser("~"), "Videos", "PB_MEDIA")
 
 if TOOL_DIR not in sys.path:
@@ -3908,7 +3921,7 @@ class XuLy(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         try:
             if u.path == "/api/health":
-                return self._json(200, {"ok": True, "tool_dir": TOOL_DIR, "pid": os.getpid()})
+                return self._json(200, {"ok": True, "tool_dir": TOOL_DIR, "pid": os.getpid(), "ver": BRIDGE_VER})
             if u.path == "/api/accounts":
                 return self._json(200, {"ok": True, "accounts": ds_tai_khoan()})
             if u.path == "/api/logs":

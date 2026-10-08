@@ -1,4 +1,5 @@
-﻿import { defineConfig, type Plugin } from 'vite'
+import crypto from 'node:crypto'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import type { IncomingMessage } from 'http'
 import { spawn, spawnSync } from 'child_process'
@@ -695,9 +696,31 @@ function bridgePlugin(): Plugin {
   return {
     name: 'pb-python-bridge',
     async configureServer(server) {
-      if (await alive()) {
-        console.log(`[bridge] đã chạy sẵn ở cổng ${BRIDGE_PORT}`)
-        return
+      // Cầu nối cũ còn sót lại (đóng app trên Windows hay để lại tiến trình python) mà khác
+      // phiên bản với scripts/pb_bridge.py hiện tại → tắt nó rồi bật bản mới; trước đây dùng
+      // luôn bản cũ nên pull code mới mà phần Python vẫn chạy code cũ.
+      const verMoi = crypto
+        .createHash('sha1')
+        .update(fs.readFileSync(path.join(scriptsDir(), 'pb_bridge.py')))
+        .digest('hex')
+        .slice(0, 12)
+      try {
+        const h = (await (await fetch(`http://127.0.0.1:${BRIDGE_PORT}/api/health`)).json()) as { pid?: number; ver?: string }
+        if (h.ver === verMoi) {
+          console.log(`[bridge] đã chạy sẵn ở cổng ${BRIDGE_PORT} (đúng phiên bản)`)
+          return
+        }
+        console.log(`[bridge] cầu nối đang chạy là bản cũ (${h.ver || '?'} ≠ ${verMoi}) — tắt pid ${h.pid} rồi bật bản mới`)
+        if (h.pid) {
+          try {
+            process.kill(h.pid)
+          } catch {
+            /* đã tắt */
+          }
+        }
+        for (let i = 0; i < 20 && (await alive()); i++) await new Promise((r) => setTimeout(r, 250))
+      } catch {
+        /* chưa có cầu nối nào chạy */
       }
       const py = findPython()
       if (!py) {

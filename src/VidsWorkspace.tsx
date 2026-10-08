@@ -180,7 +180,14 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
       return ''
     }
   })
-  const [refs, setRefs] = useState<RefImage[]>(() => loadJson(LS_REFS, [] as RefImage[]))
+  const [refs, setRefs] = useState<RefImage[]>(() => {
+    // Bản cũ đánh id ảnh từ 100 mỗi lần mở app → ảnh cũ và mới trùng id (số thứ tự lặp,
+    // xoá một thẻ mất cả thẻ khác). Bỏ ảnh trùng đường dẫn và cấp lại id không trùng.
+    const seen = new Set<string>()
+    return loadJson(LS_REFS, [] as RefImage[])
+      .filter((r) => r && r.path && !seen.has(r.path) && (seen.add(r.path), true))
+      .map((r, i) => ({ ...r, id: i + 1 }))
+  })
   const [queueTab, setQueueTab] = useState<QueueTab>('all')
   const [search, setSearch] = useState('')
   const [collapsed, setCollapsed] = useState(() => loadJson(LS_COLLAPSED, false))
@@ -230,7 +237,6 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
   const [account, setAccount] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const imgRef = useRef<HTMLInputElement>(null)
-  const nextId = useRef(100)
   const logSince = useRef(0)
   const [nguonMap, setNguonMap] = useState<Record<string, { co: boolean; email: string }>>({})
   useEffect(() => {
@@ -547,7 +553,7 @@ export default function VidsWorkspace({ onOpenSettings }: Props) {
       rememberThumb(r.path, data)
       setRefs((prev) => [
         ...prev.filter((x) => x.path !== r.path),
-        { id: ++nextId.current, name: r.name, tag: r.tag, path: r.path },
+        { id: Date.now() + Math.random(), name: r.name, tag: r.tag, path: r.path },
       ])
       flash(`Đã thêm ${r.tag}`)
     } catch (e) {
